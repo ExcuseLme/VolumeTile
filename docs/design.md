@@ -164,7 +164,7 @@ dependencies {
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
             android:exported="true">
             <intent-filter>
-                <action android:name="android.service.quicksettings.TileService" />
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
             <!-- 磁贴定义（label + icon），旧系统的唯一来源 -->
             <meta-data
@@ -191,6 +191,7 @@ dependencies {
 | 无 `<activity>` | 不声明任何 Activity | G2；应用不出现在桌面启动器，仅出现在「设置 → 应用」与磁贴编辑页 |
 | `android:permission="BIND_QUICK_SETTINGS_TILE"` | 必须 | 限定仅系统（SystemUI）可绑定该服务 |
 | `exported="true"` | 必须 | 配合 intent-filter 供系统发现 |
+| intent-filter action = `android.service.quicksettings.action.QS_TILE` | **必须精确等于此值**（`TileService.ACTION_BIND_QS_TILE` 常量） | ⚠️ 实测教训：曾误写为 `android.service.quicksettings.TileService`（貌似合理但不存在），SystemUI 按该 action 查询 PackageManager 永远查不到 → 磁贴不出现且重启无效。小米《MIUI10通知栏快捷开关适配说明》官方示例同此值 |
 | `TILE_CATEGORY` = `CATEGORY_DISPLAY` | 可选但推荐（36.1 官方 recommended） | 把磁贴归入 Android 16 QPR1+ 编辑页的「显示」类；纯分类美观项，改 `CATEGORY_UTILITIES` 亦可 |
 | 不声明 `ACTIVE_TILE` | **刻意不使用主动磁贴模式** | 被动磁贴在每次面板展开时绑定刷新，磁贴级数显示永远最新（包括用户用实体键调过的情况）；主动磁贴仅在点击时绑定，省电但显示可能过期——本项目显示新鲜度优先，见 §7.1 |
 | 不声明 `TOGGLEABLE_TILE` | 不使用 | 语义是"开关型磁贴"的无障碍 Switch 行为；音量 ±1 不是开/关状态 |
