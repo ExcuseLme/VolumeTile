@@ -1,36 +1,24 @@
 package dev.volumetile.volume
 
 import android.content.Context
-import android.media.AudioAttributes
 import android.media.AudioManager
 import dev.volumetile.R
 
 /**
  * 音量控制核心（无 UI 依赖）。
  *
- * 双路径设计（见 docs/design.md §6.3）：
- *  - 主路径：API 34 音量分组接口 [AudioManager.getVolumeGroupIdForAttributes] +
- *    [AudioManager.adjustVolumeGroupVolume]（尽可能使用新 API）
- *  - 回退路径：经典 [AudioManager.adjustStreamVolume]（稳定兜底）
+ * 单 IPC 设计（v1.2 / 延迟优化 R1）：
+ * 每次点击仅一次 Binder 调用 [AudioManager.adjustStreamVolume] 直接完成音量变更。
  *
- * 官方文档明确：分组关联到流类型时，分组接口内部即回退到 adjustStreamVolume，
- * 因此两条路径行为一致、风险有界。
+ * 历史说明（v1.0–v1.1 曾采用双路径）：优先走 API 34 音量分组接口
+ * （getVolumeGroupIdForAttributes 查询 + adjustVolumeGroupVolume 调节，2 次串行 IPC）。
+ * 经全链路延迟审查（docs/design.md §6.3）确认在手机上应弃用分组路径：
+ *  - 官方文档明确：分组关联到流类型时，分组接口内部即回退 adjustStreamVolume——
+ *    组查询在本设备上是纯延迟、零行为收益；
+ *  - 本应用级数显示一直读自 stream 轴（getStreamVolume），读写同轴可消除
+ *    "副标题显示值与实际所改对象不一致"的理论分歧。
  */
 object VolumeController {
-
-    /**
-     * `getVolumeGroupIdForAttributes` 未命中时的哨兵值。
-     *
-     * 公开文档返回值描述为 `AudioVolumeGroup.DEFAULT_VOLUME_GROUP`，其 AOSP 源码值为 -1；
-     * 该类是 @hide @SystemApi，公开 SDK 中不可引用，故在此以本地常量声明。
-     */
-    private const val DEFAULT_VOLUME_GROUP = -1
-
-    /** 媒体用途的音频属性：本应用固定调节媒体音量 */
-    private val mediaAttrs: AudioAttributes = AudioAttributes.Builder()
-        .setUsage(AudioAttributes.USAGE_MEDIA)
-        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-        .build()
 
     /**
      * 静默调节（flags = 0）：不请求任何系统音量浮层 UI。
@@ -40,32 +28,29 @@ object VolumeController {
      */
     private const val FLAGS = 0
 
-    /** 调节媒体音量一级。任何异常都不会抛给调用方（磁贴点击路径绝不崩溃）。 */
+    /** 进程级缓存：AudioManager 为系统单例，字段缓存省去每次 ServiceRegistry 查询（R4） */
+    private var cachedAudioManager: AudioManager? = null
+
+    /** 调节媒体音量一级。全程 1 次 IPC，任何异常都不会抛给调用方。 */
     fun adjust(context: Context, direction: Int) {
-        val am = context.getSystemService(AudioManager::class.java)
-
-        // 路径 A：API 34 音量分组（新 API）
         runCatching {
-            val groupId = am.getVolumeGroupIdForAttributes(mediaAttrs)
-            if (groupId != DEFAULT_VOLUME_GROUP) {
-                am.adjustVolumeGroupVolume(groupId, direction, FLAGS)
-                return
-            }
-            // groupId 无效 → 落入路径 B
+            audioManager(context)
+                .adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, FLAGS)
         }
-
-        // 路径 B：经典流接口回退（分组缺失 / SecurityException（DND）均落此）
-        runCatching {
-            am.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, FLAGS)
-        }
-        // 若两路均失败：静默放弃本次点击（媒体流场景实际不会发生）
+        // 媒体流不触发 DND SecurityException；兜底仅为"点击路径绝不崩溃"的承诺，
+        // 失败则静默放弃本次点击
     }
 
-    /** 磁贴显示用读数。分组 API 无配套读数方法，始终取自经典流 API。 */
+    /** 磁贴显示用读数（stream 轴，与调节路径同轴）。 */
     fun levelText(context: Context): String {
-        val am = context.getSystemService(AudioManager::class.java)
-        val current = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val am = audioManager(context)
+        val cur = am.getStreamVolume(AudioManager.STREAM_MUSIC)
         val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        return context.getString(R.string.tile_level_fmt, current, max)
+        return context.getString(R.string.tile_level_fmt, cur, max)  // "媒体 %1$d/%2$d"
     }
+
+    private fun audioManager(context: Context): AudioManager =
+        cachedAudioManager
+            ?: context.getSystemService(AudioManager::class.java)!!
+                .also { cachedAudioManager = it }
 }

@@ -26,7 +26,7 @@ VolumeTile 是一个**零界面（No-UI）**的 Android 工具应用：安装后
 | G2 | 应用全程无任何自有 UI（无 Activity、无悬浮窗、无通知） |
 | G3 | 级数完全跟随系统实际值（15 级机型走 15 级，20 级机型走 20 级），到顶/到底自动停止 |
 | G4 | 零运行时权限，安装即用 |
-| G5 | 使用尽可能新的公开 API（音量分组 API 34、磁贴分类 API 36.1 等），同时保留经典 API 兜底 |
+| G5 | 在不牺牲延迟的前提下选用公开 API：磁贴分类 36.1、setSubtitle 29、stateDescription 30 照常使用；音量调节经延迟审查（§6.3）确定为单 IPC 的经典流接口（分组 API 34 分析后弃用） |
 | G6 | 磁贴文字实时反映当前音量（如 `媒体 7/15`） |
 
 ### 1.4 非目标（Non-Goals）
@@ -71,7 +71,7 @@ graph TD
     end
 
     subgraph Framework [Android 框架]
-        AM[AudioManager<br/>API 34 音量分组 + 经典流 API]
+        AM[AudioManager<br/>adjustStreamVolume（单 IPC）]
         TILE[Tile<br/>setSubtitle / setStateDescription / updateTile]
     end
 
@@ -81,7 +81,7 @@ graph TD
     T2 --> B
     B -- onClick: 调节 --> C
     B -- onStartListening / 刷新: 读数 --> C
-    C -- adjustVolumeGroupVolume<br/>（回退 adjustStreamVolume） --> AM
+    C -- adjustStreamVolume<br/>（每次点击 1 次 IPC） --> AM
     B -- 展示 --> TILE
 ```
 
@@ -105,7 +105,7 @@ graph TD
 | 配置 | 值 | 理由 |
 |---|---|---|
 | 语言 | Kotlin（纯代码，无 View/Compose） | 样板最少 |
-| `minSdk` | **34**（Android 14） | 个人唯一设备为 Android 16；34 解锁音量分组 API（34）、`setSubtitle`（29）、`stateDescription`（30），无需任何版本分支判断 |
+| `minSdk` | **34**（Android 14） | 个人唯一设备为 Android 16；34 解锁 `setSubtitle`（29）、`stateDescription`（30）等磁贴 API（音量分组 API 34 经延迟审查后未采用，见 §6.3），无需任何版本分支判断 |
 | `targetSdk` | **36**（Android 16） | 当前最新正式版；行为变更清单已核实无影响 |
 | `compileSdk` | 36 | 与 target 对齐，可用 36.1 的 `TILE_CATEGORY` 常量（运行期由旧系统忽略） |
 | 第三方依赖 | **零** | 框架 API 全覆盖；APK 预期 < 200 KB |
@@ -214,16 +214,16 @@ abstract class VolumeTileServiceBase : TileService() {
 
     /** 用户点击磁贴（含锁屏点击，见 §7.3） */
     override fun onClick() {
-        VolumeController.adjust(applicationContext, direction) // 每次点击立即执行，绝不合并
-        scheduleRefresh()                                      // 回写按 250ms 窗口合并，见下
+        VolumeController.adjust(applicationContext, direction) // 第一步：单 IPC 真实调音量
+        mainHandler.post { scheduleRefresh() }                 // 第二步：回写异步移出关键路径（R2）
     }
 
-    /** 面板展开、磁贴可见时立即刷新（不节流，保证展开即最新） */
+    /** 面板展开、磁贴可见时立即刷新（同步，保证展开即最新；兼作 Binder 预热） */
     override fun onStartListening() = refreshTile()
 
     /** 连点节流：距上次回写 ≥250ms 立即刷；否则合并为一次 trailing 回写（E4 落地） */
     private fun scheduleRefresh() {
-        // 距上次回写 <250ms 时 postDelayed 合并；onDestroy 清理回调
+        // 距上次回写 <250ms 时 postDelayed 合并；onDestroy 用 removeCallbacksAndMessages 清理
     }
 
     private fun refreshTile() {
@@ -231,7 +231,6 @@ abstract class VolumeTileServiceBase : TileService() {
         val level = VolumeController.levelText(this)
         if (level == lastLevel) return       // 级数未变（到顶/到底）：跳过回写
         lastLevel = level
-        tile.label = getString(labelRes)
         tile.subtitle = level               // API 29+：媒体 7/15
         tile.stateDescription = level       // API 30+，TalkBack 播报
         tile.state = Tile.STATE_ACTIVE
@@ -240,7 +239,7 @@ abstract class VolumeTileServiceBase : TileService() {
 }
 ```
 
-**职责边界**：基类只做"磁贴 ↔ 控制器"的接线与状态回写；任何音量语义都在 `VolumeController`。**回写节流的动机**：调音量必须每次点击立即执行，但 `updateTile` 状态回写会让 SystemUI 重刷磁贴视图——高频连点期间（HyperOS 磁贴在状态刷新阶段可能丢点击）将回写合并到 250ms 窗口，风暴中每窗口至多回写一次，风暴结束 250ms 内副标题仍会追平。
+**职责边界**：基类只做"磁贴 ↔ 控制器"的接线与状态回写；任何音量语义都在 `VolumeController`。**回写不阻塞点击（R2）**：`onClick` 只同步完成"单 IPC 调音量"，回写经 `post` 异步执行——单击副标题仅晚数毫秒刷新，连点风暴时主线程 Handler 队列更快排空。**回写节流（E4）**：`updateTile` 会让 SystemUI 重刷磁贴视图（状态刷新阶段 HyperOS 可能丢点击），故合并到 250ms 窗口，风暴中每窗口至多回写一次、结束后 250ms 内副标题追平；主标签不覆写（R4），由 Manifest/磁贴 XML 提供。
 
 ### 6.2 磁贴子类
 
@@ -255,62 +254,50 @@ class VolumeDownTileService : VolumeTileServiceBase() {
 
 ### 6.3 `VolumeController`（音量核心）
 
-**双路径设计**：优先使用 API 34 音量分组接口（"尽可能新"），不满足条件时回退经典流接口（"更稳定"）。官方文档明确分组接口在分组关联流类型时内部即回退 `adjustStreamVolume`，因此两条路径行为一致、风险有界。
+**单 IPC 设计（v1.2 延迟审查 R1）**：v1.0–v1.1 曾以 API 34 音量分组接口为主路径（查询 + 调节共 2 次串行 Binder IPC）。全链路延迟审查结论：官方文档明确手机上分组关联到流类型时分组接口内部即回退 `adjustStreamVolume`——组查询是纯延迟、零行为收益；且本应用读数始终取自 stream 轴，读写同轴更自洽。故 v1.2 起直接以单次 `adjustStreamVolume` 完成调节。
 
 ```kotlin
 package dev.volumetile.volume
 
 object VolumeController {
 
-    private val mediaAttrs = AudioAttributes.Builder()
-        .setUsage(AudioAttributes.USAGE_MEDIA)
-        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-        .build()
-
     private const val FLAGS = 0   // 静默调节：不请求系统音量浮层，见 §7.2 反馈策略
 
-    /**
-     * 分组未命中哨兵。公开文档描述为 AudioVolumeGroup.DEFAULT_VOLUME_GROUP，
-     * 但该类是 @hide @SystemApi（公开 SDK 参考页不存在、应用代码不可引用），
-     * AOSP 源码确认其值为 -1，故以本地常量声明。
-     */
-    private const val DEFAULT_VOLUME_GROUP = -1
+    /** 进程级缓存：AudioManager 为系统单例（R4） */
+    private var cachedAudioManager: AudioManager? = null
 
-    /** 调节媒体音量一级。绝不抛出到调用方。 */
+    /** 调节媒体音量一级。全程 1 次 IPC，绝不抛出到调用方。 */
     fun adjust(context: Context, direction: Int) {
-        val am = context.getSystemService(AudioManager::class.java)
-        // 路径 A：API 34 音量分组
         runCatching {
-            val gid = am.getVolumeGroupIdForAttributes(mediaAttrs)
-            if (gid != DEFAULT_VOLUME_GROUP) {
-                am.adjustVolumeGroupVolume(gid, direction, FLAGS)
-                return
-            }
+            audioManager(context)
+                .adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, FLAGS)
         }
-        // 路径 B：经典回退（分组缺失 / SecurityException 均落此）
-        runCatching {
-            am.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, FLAGS)
-        }
-        // 两路皆败（理论上仅 DND 策略拒绝时出现）：静默放弃，本次点击无效
+        // 媒体流不触发 DND SecurityException；失败则静默放弃本次点击
     }
 
-    /** 磁贴显示用读数，始终来自经典流 API（分组 API 无读数方法） */
+    /** 磁贴显示用读数（stream 轴，与调节路径同轴） */
     fun levelText(context: Context): String {
-        val am = context.getSystemService(AudioManager::class.java)
+        val am = audioManager(context)
         val cur = am.getStreamVolume(AudioManager.STREAM_MUSIC)
         val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         return context.getString(R.string.tile_level_fmt, cur, max)  // "媒体 %1$d/%2$d"
     }
+
+    private fun audioManager(context: Context): AudioManager =
+        cachedAudioManager
+            ?: context.getSystemService(AudioManager::class.java)!!
+                .also { cachedAudioManager = it }
 }
 ```
 
 **设计要点**：
 
-1. **读写分离**：写走新 API（分组），读必须走经典 API（`getStreamVolume` / `getStreamMaxVolume`）——API 34 分组接口没有配套的当前值/最大值方法。
-2. **`DEFAULT_VOLUME_GROUP` 判定**：`getVolumeGroupIdForAttributes` 找不到分组时返回该哨兵值（-1），直接调节会静默无效，必须回退。⚠️ 实现注意：该常量所在的 `AudioVolumeGroup` 类为 `@hide @SystemApi`，应用代码不可引用（参考页 404），故以本地常量 `DEFAULT_VOLUME_GROUP = -1` 替代（AOSP 源码确认）；两个分组方法本身（`getVolumeGroupIdForAttributes` / `adjustVolumeGroupVolume`）均为公开 API。
-3. **`SecurityException` 防御**：分组接口在触发勿扰（DND）变更且调用方无通知策略权限时抛此异常；媒体流通常不触发，但用 `runCatching` 统一兜底。
+1. **读写同轴**：调（`adjustStreamVolume`）与读（`getStreamVolume` / `getStreamMaxVolume`）同在 stream 轴，副标题与实际变更对象永不分歧（v1.0–1.1 的"读写分离"随分组路径一并弃用）。
+2. **单次 IPC（R1）**：每次点击一次 Binder 调用直达音量变更；分组查询这一步前置 IPC 已移除。
+3. **`SecurityException` 防御**：媒体流不触发 DND 异常，`runCatching` 仅作"点击路径绝不崩溃"的兜底。
 4. **绝不外抛**：磁贴点击路径上任何异常都不得导致崩溃或 Service 中断。
 5. **不使用 `adjustSuggestedStreamVolume(USE_DEFAULT_STREAM_TYPE)`**：它会跟随实体音量键的"当前流"（铃声模式下变铃声流），引入 DND 与铃声模式两个额外变量；固定媒体流行为可预期（见 §7.2）。
+6. **AudioManager 字段缓存（R4）**：系统单例缓存于 object 字段，省去每次 ServiceRegistry 查询。
 
 ### 6.4 点击时序
 
@@ -325,15 +312,12 @@ sequenceDiagram
     U->>S: 点击「音量 +」磁贴
     S->>T: onClick()
     T->>C: adjust(ctx, ADJUST_RAISE)
-    C->>A: getVolumeGroupIdForAttributes(media)
-    A-->>C: groupId（或 DEFAULT）
-    C->>A: adjustVolumeGroupVolume(gid, RAISE, 0=静默)
+    C->>A: adjustStreamVolume(MUSIC, RAISE, 0=静默)   ← 单次 IPC
     Note over A: 级数 +1，到顶自动停（无浮层弹出）<br/>控制中心自带音量条同步变化
     A-->>C: ok
     C-->>T: return
-    T->>C: levelText() → "媒体 8/15"
-    T->>T: tile.subtitle = 文本<br/>tile.updateTile()
-    T-->>S: 磁贴副标题已更新
+    T-->>S: onClick 立即返回（R2：回写已 post 异步）
+    Note over T: [异步] scheduleRefresh → levelText →<br/>tile.subtitle / updateTile（250ms 窗口合并）
 ```
 
 ---
@@ -361,7 +345,7 @@ sequenceDiagram
 
 **高频点击回写节流（E4 落地）**：调音量每次点击**立即执行**、绝不合并；磁贴 `updateTile()` 回写按 **250ms 窗口合并**（单击立即刷、连点合并为一次 trailing 刷新），并跳过级数未变化的回写——降低连点风暴中对 SystemUI 磁贴视图的重刷次数（HyperOS 磁贴在状态刷新阶段可能丢弃点击）。
 
-**级别步进**：不实现任何自定义步进逻辑——`adjustVolumeGroupVolume` / `adjustStreamVolume` 按系统自身刻度走一级，天然满足 G3（15 级机型 15 级，随系统设置变化自动适配）。到顶/到底时系统自动停止，不循环、不越界。
+**级别步进**：不实现任何自定义步进逻辑——`adjustStreamVolume` 按系统自身刻度走一级，天然满足 G3（15 级机型 15 级，随系统设置变化自动适配）。到顶/到底时系统自动停止，不循环、不越界。
 
 ### 7.3 锁屏行为
 
@@ -426,8 +410,8 @@ sequenceDiagram
 |---|---|---|---|
 | E1 | 音量已在最大/最小 | 停在边界，不循环、不报错（可能伴随系统到顶提示音） | 系统 API 自带行为，不干预 |
 | E2 | 系统总级数 ≠ 15（如 20 级、7 级） | 显示与步进均按实际值 | 只读 `getStreamMaxVolume`，硬编码零处 |
-| E3 | 勿扰模式（DND）下触发 `SecurityException` | 本次点击静默失败，磁贴不崩溃、不卡死 | `runCatching` 双路径兜底（§6.3） |
-| E4 | `getVolumeGroupIdForAttributes` 返回 `DEFAULT_VOLUME_GROUP` | 走经典流回退 | §6.3 路径判定 |
+| E3 | 勿扰模式（DND）下触发 `SecurityException` | 本次点击静默失败，磁贴不崩溃、不卡死 | `runCatching` 兜底（§6.3）；媒体流实际不触发 |
+| E4 | 回写执行时服务已停止监听/销毁 | `qsTile` 为空直接返回；已 post 的回调被 `onDestroy` 清理，无崩溃 | §6.1 null 守卫 + `removeCallbacksAndMessages` |
 | E5 | 设备为固定音量设备（`isVolumeFixed`，车机/演示机） | 调节无效但不崩溃 | API 空操作 + `runCatching`；手机端不会出现 |
 | E6 | 磁贴进程被系统回收后面板展开 | SystemUI 重新拉起服务，`onStartListening` 照常刷新 | 被动磁贴标准行为，无需处理 |
 | E7 | 锁屏下点击 | 正常调节，不解锁、不弹窗 | §7.3 |
@@ -446,7 +430,7 @@ sequenceDiagram
 | `TileService` 全套（`onClick`/`onStartListening`/`qsTile`） | 24 | 磁贴骨架 | ✅ |
 | `Tile.setSubtitle` | 29 | 级数副标题 | ✅ |
 | `Tile.setStateDescription` | 30 | 无障碍状态播报 | ✅ |
-| `adjustVolumeGroupVolume` 等分组 API | 34 | 最新音量调节路径 | ✅ 主路径 |
+| `adjustVolumeGroupVolume` 等分组 API | 34 | 曾为 v1.0–1.1 主路径 | ❌ v1.2 弃用：手机上行为终点即流接口，却多一次串行 IPC（§6.3 延迟审查 R1） |
 | `adjustStreamVolume` / `getStreamVolume` / `getStreamMaxVolume` | 1 | 回退路径 + 全部读数 | ✅（未弃用，参考文档核实） |
 | `TILE_CATEGORY` 分类元数据 | 36.1 | 磁贴编辑页归类 | ✅ 旧系统忽略 |
 | `STREAM_ASSISTANT` 等 Android 17 API | 37 | — | ❌ 不使用（设备为 Android 16） |
