@@ -1,9 +1,9 @@
 # VolumeTile 设计文档
 
-> **文档版本**: v1.3（随实现滚动更新）
+> **文档版本**: v1.4（随实现滚动更新）
 > **项目代号**: VolumeTile
 > **目标平台**: Android 16（API 36），minSdk 34
-> **文档状态**: 已实现并持续演进（v1.3：整数级对齐 + 纯静态无状态磁贴）
+> **文档状态**: 已实现并持续演进（v1.3：整数级对齐 + 纯静态无状态磁贴；v1.4：CI/文档维护轮，APK 行为与 1.3 一致）
 
 ---
 
@@ -121,23 +121,20 @@ android {
         applicationId = "com.tedexcuseme.volumetile"
         minSdk = 34
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 5
+        versionName = "1.4"
     }
-
-    buildFeatures { buildConfig = false }
-    // 无 viewBinding / compose —— 没有界面
-}
-
-dependencies {
-    // 刻意为空：仅依赖 android.jar 框架 API
 }
 ```
 
-### 4.3 分发方式
+> 完整文件另含 `buildTypes`（release 不配签名，见 §5 与 CI）与 `compileOptions`/`kotlin` JVM 17 对齐；无任何 `dependencies`。
 
-- `./gradlew assembleDebug` 产出 APK → `adb install` 或直接手机安装。
-- 无签名要求（自用）；如需统一签名，使用本地 debug/自生成 keystore。
+### 4.3 分发方式（CI-only）
+
+- 仓库**不携带 Gradle wrapper**、不要求本地 Android 环境：全部构建在 GitHub Actions 完成。
+- push 到 `release/**` 分支（或手动触发）→ CI 产出**已签名 APK** → 从该次 run 的 Artifacts 或 `continuous` 滚动预发布下载安装（步骤见 README）。
+- 签名链路：Gradle 产出 unsigned APK → CI 用 `apksigner --ks-type PKCS12` 显式签名（密钥 `keystore/release.p12` 随仓库提交）。
+- 纯文档变更（`docs/**`、`*.md`）经 `paths-ignore` 不触发构建。
 
 ---
 
@@ -333,7 +330,7 @@ sequenceDiagram
 | 特性 | 被动磁贴（**本项目采用**） | 主动磁贴 `ACTIVE_TILE` |
 |---|---|---|
 | 绑定时机 | 面板展开且磁贴可见时 | 仅点击时（状态由 App 自维护） |
-| 级数显示新鲜度 | ✅ 每次下拉都刷新，实体键调过也准确 | ⚠️ 仅在 App 进程存活并 `requestListeningState` 后刷新 |
+| 状态/刻度刷新 | ✅ 每次面板可见时刷新（刻度缓存 + 静态外观） | ⚠️ 仅在 App 进程存活并 `requestListeningState` 后刷新 |
 | 复杂度 | 低（默认行为） | 需进程管理与推送逻辑 |
 | 成本 | 面板展开时一次轻量绑定（仅当磁贴在面板上） | 更省电 |
 
@@ -416,7 +413,7 @@ sequenceDiagram
 | E3 | 勿扰模式（DND）下触发 `SecurityException` | 本次点击静默失败，磁贴不崩溃、不卡死 | `runCatching` 兜底（§6.3）；媒体流实际不触发 |
 | E4 | SystemUI 侧重建磁贴（我方进程未重启） | 无条件写 `STATE_INACTIVE` 保证可点击且未高亮，避免缺省态 `UNAVAILABLE` 导致点击被 SystemUI 丢弃 | §6.1 无条件写策略 |
 | E5 | 设备为固定音量设备（`isVolumeFixed`，车机/演示机） | 调节无效但不崩溃 | API 空操作 + `runCatching`；手机端不会出现 |
-| E6 | 磁贴进程被系统回收后面板展开 | SystemUI 重新拉起服务，`onStartListening` 照常刷新 | 被动磁贴标准行为，无需处理 |
+| E6 | 磁贴进程被系统回收后面板展开 | SystemUI 重新拉起服务，`onStartListening` 照常执行（刷新刻度缓存 + 确保静态状态） | 被动磁贴标准行为，无需处理 |
 | E7 | 锁屏下点击 | 正常调节，不解锁、不弹窗 | §7.3 |
 | E8 | 用户用实体键/其他 App 改了音量 | 行为不受影响（磁贴无显示状态依赖）；音量条自然反映真实值 | v1.3 已移除全部显示回写 |
 | E9 | 连续快速点击 | 每次点击独立生效，级数单调到界为止 | 无状态累积逻辑 |
@@ -444,7 +441,7 @@ sequenceDiagram
 - **Android 14–16**：设计覆盖范围内（minSdk 34）。
 - **Android 16 行为变更**：已逐条核对两份官方清单，无音量/音频/磁贴条目；本应用无 Activity，"无边框""预测性返回"等条目不适用。
 - **Android 17 前瞻**："后台音频强化"仅约束后台擅自播放/停止音频，不涉及调音量；无需提前适配。
-- **OEM 差异（MIUI/ColorOS 等）**：个别厂商可能无视 flags 仍弹自带音量条——观感差异，非功能缺陷；磁贴服务由 SystemUI 绑定，不受杀后台策略影响。
+- **OEM 差异（MIUI/ColorOS 等）**：磁贴由 SystemUI 绑定，不受杀后台策略影响；澎湃特有行为（不渲染 subtitle → D 方案、无极音量 0..150 刻度 → step = max/15）均已在实现中适配，其余厂商按 AOSP 标准路径工作（已知例外：vivo OriginOS 有三方磁贴异常的公开 issue，待真机验证）。
 
 ---
 
@@ -479,9 +476,9 @@ sequenceDiagram
 
 ### 12.2 构建验收
 
-- [ ] `./gradlew assembleDebug` 零警告通过
+- [ ] CI `gradle assembleRelease` 构建通过（GitHub Actions 绿色）
 - [ ] APK 依赖清单仅含 framework（无第三方库）
-- [ ] Manifest lint：无 `MissingPermission` / `ExportedService` 告警
+- [ ] Manifest 要素核对：QS_TILE action / BIND 权限 / exported 齐全（见 §5.1）
 - [ ] 应用出现在「设置 → 应用」，**不**出现在桌面启动器
 
 ---
@@ -524,7 +521,7 @@ VolumeTile/
 |---|---|---|
 | 铃声/闹钟音量磁贴 | 复用基类，参数化 stream / `AudioAttributes` | 实际需求出现 |
 | 静音开关磁贴 | `Tile.STATE_INACTIVE` + `adjustStreamVolume(ADJUST_MUTE)` | 需求 |
-| 静默模式选项 | `FLAGS` 改为 `0`，加本地开关（需引入设置页 → 与 G2 冲突，需重新评估） | 用户反馈面板打扰 |
+| 反馈模式切换（静默 ↔ 系统音量条浮层） | 当前固定 `flags = 0`（v1.1 起静默）；若需可切换须引入本地开关 → 设置页与 G2 冲突，需重新评估 | 用户反馈想要 `FLAG_SHOW_UI` 浮层时 |
 | 主动磁贴模式 | 声明 `ACTIVE_TILE` + `requestListeningState` | 磁贴数量/耗电优化需求 |
 | 多语言 | 补 `values-en/strings.xml` | 分享给他人时 |
 

@@ -6,6 +6,10 @@ on:
     branches:
       - release
       - "release/**"
+    # 纯文档变更不触发构建
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
   workflow_dispatch:
 
 # 滚动发布需要写仓库（创建/更新 continuous 预发布）
@@ -20,7 +24,9 @@ concurrency:
 jobs:
   build:
     name: Build and publish APK
-    runs-on: ubuntu-latest
+    # 固定镜像：GitHub 通知 ubuntu-latest 将于 2026-10-19 迁移到 Ubuntu 26，
+    # 固定 24.04 避免迁移日构建环境突变，后续版本主动升级
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     steps:
@@ -50,7 +56,7 @@ jobs:
 
       # 仓库不携带 gradle wrapper（无本地环境），由 setup-gradle 安装精确版本
       - name: Set up Gradle 8.13
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v5
         with:
           gradle-version: "8.13"
 
@@ -79,7 +85,7 @@ jobs:
 
       # 无论后续滚动发布成败，构建产物都已可下载
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: VolumeTile-release-${{ github.run_number }}
           path: VolumeTile-release.apk
