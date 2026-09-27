@@ -32,8 +32,13 @@ object VolumeController {
         .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
         .build()
 
-    /** FLAG_SHOW_UI：弹出 Android 15/16 新版系统音量面板作为点击反馈 */
-    private const val FLAGS = AudioManager.FLAG_SHOW_UI
+    /**
+     * 静默调节（flags = 0）：不请求任何系统音量浮层 UI。
+     * 反馈来源：磁贴副标题实时级数 + 控制中心自带音量条的同步变化
+     * （澎湃控制中心本身提供音量条，无需额外弹窗）。
+     * 同时作为高频点击修复实验 E1：彻底排除系统音量浮层干扰连点的可能。
+     */
+    private const val FLAGS = 0
 
     /** 调节媒体音量一级。任何异常都不会抛给调用方（磁贴点击路径绝不崩溃）。 */
     fun adjust(context: Context, direction: Int) {

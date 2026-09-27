@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Material Design「volume_down」（Apache-2.0），白色填充，磁贴图标由系统着色 -->
+<!-- 磁贴图标「音量 -」：喇叭 + 减号（矢量、纯白、透明背景、24dp，符合小米磁贴图标规范）
+     左：喇叭（与「音量 +」完全同形，保证两磁贴视觉一致）
+     右：减号（横 14-22，居中于 y=12） -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
@@ -7,5 +9,5 @@
     android:viewportHeight="24">
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M18.5,12c0,-1.77 -1.02,-3.29 -2.5,-4.03v8.05c1.48,-0.73 2.5,-2.25 2.5,-4.02zM5,9v6h4l5,5V4L9,9H5z" />
+        android:pathData="M3,9v6h4l5,5V4L7,9H3z M14,11h8v2h-8z" />
 </vector>
