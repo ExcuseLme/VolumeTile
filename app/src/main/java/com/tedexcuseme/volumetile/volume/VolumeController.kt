@@ -1,4 +1,4 @@
-package dev.volumetile.volume
+package com.tedexcuseme.volumetile.volume
 
 import android.content.Context
 import android.media.AudioManager
