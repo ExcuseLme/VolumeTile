@@ -24,7 +24,7 @@
 ## 使用
 
 安装后：下拉快捷设置 → 点「编辑」（铅笔图标）→ 在列表中找到「音量 +」「音量 -」→
-拖入面板固定。点击即调节（静默模式，无额外弹窗），磁贴副标题显示 `媒体 7/15`，控制中心自带的音量条会实时同步。
+拖入面板固定。点击即调节并**自动对齐到整数级**（静默模式，无额外弹窗）；磁贴为**纯静态工具外观**（固定名称、无高亮状态），级数变化由控制中心自带的音量条实时反馈。
 
 ## 签名说明
 
@@ -40,8 +40,8 @@ docs/design.md                设计文档
 keystore/release.p12          发布签名密钥（固定签名）
 app/src/main/AndroidManifest.xml
 app/src/main/java/com/tedexcuseme/volumetile/
-  ├─ volume/VolumeController.kt      音量调节核心（单 IPC 直调，v1.2 延迟优化）
-  └─ tile/VolumeTileServiceBase.kt   磁贴基类（点击/刷新）
+  ├─ volume/VolumeController.kt      音量调节核心（v1.3 整数级对齐网格，step=max/15）
+  └─ tile/VolumeTileServiceBase.kt   磁贴基类（点击调音量 / 静态外观）
       VolumeUpTileService.kt         「音量 +」磁贴
       VolumeDownTileService.kt       「音量 -」磁贴
 ```

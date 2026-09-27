@@ -1,52 +1,65 @@
-package com.tedexcuseme.volumetile.volume
+package dev.volumetile.volume
 
 import android.content.Context
 import android.media.AudioManager
-import com.tedexcuseme.volumetile.R
 
 /**
  * 音量控制核心（无 UI 依赖）。
  *
- * 单 IPC 设计（v1.2 / 延迟优化 R1）：
- * 每次点击仅一次 Binder 调用 [AudioManager.adjustStreamVolume] 直接完成音量变更。
+ * v1.3：对齐网格调节 —— 系统滑条造成的非整数级位置（如 0..150 刻度上的 43），
+ * 经磁贴调节后必须落到整数级网格（43 − → 40，45 + → 50，40 ± → 30/50）。
  *
- * 历史说明（v1.0–v1.1 曾采用双路径）：优先走 API 34 音量分组接口
- * （getVolumeGroupIdForAttributes 查询 + adjustVolumeGroupVolume 调节，2 次串行 Binder IPC）。
- * 经全链路延迟审查（docs/design.md §6.3）确认在手机上应弃用分组路径：
- *  - 官方文档明确：分组关联到流类型时，分组接口内部即回退 adjustStreamVolume——
- *    组查询在本设备上是纯延迟、零行为收益；
- *  - 本应用级数显示一直读自 stream 轴（getStreamVolume），读写同轴可消除
- *    "副标题显示值与实际所改对象不一致"的理论分歧。
+ * 机制（依据小米《MIUI无极音量适配说明》官方公式 step = max / 15，K1 实测确认 max=150）：
+ *  - HyperOS 无极音量：API 刻度 0..150，step = 10（即 UI 的 15 级）；
+ *  - 普通机型：max = 15，step = 1 —— 网格公式退化为 cur±1，与原生 adjust 恒等（零回归）；
+ *  - max % 15 != 0 的机型：网格无定义 → 回退原生 adjustStreamVolume（系统内部仍按
+ *    max/15 计算步长，只是不对齐）。
+ *
+ * 每击 2 次 IPC（读 cur + setStreamVolume 绝对定位）；绝对定位天然消除任何分数残留。
  */
 object VolumeController {
 
-    /**
-     * 静默调节（flags = 0）：不请求任何系统音量浮层 UI。
-     * 反馈来源：磁贴副标题实时级数 + 控制中心自带音量条的同步变化
-     * （澎湃控制中心本身提供音量条，无需额外弹窗）。
-     * 同时作为高频点击修复实验 E1：彻底排除系统音量浮层干扰连点的可能。
-     */
+    /** 静默：不请求任何系统音量浮层（级数反馈 = 控制中心自带音量条） */
     private const val FLAGS = 0
 
-    /** 进程级缓存：AudioManager 为系统单例，字段缓存省去每次 ServiceRegistry 查询（R4） */
     private var cachedAudioManager: AudioManager? = null
 
-    /** 调节媒体音量一级。全程 1 次 IPC，任何异常都不会抛给调用方。 */
-    fun adjust(context: Context, direction: Int) {
+    /** 刻度缓存：面板每次可见时由 [refreshScale] 刷新（非点击路径，1 IPC） */
+    private var cachedMax = 0
+    private var cachedStep = 0   // 0 = 网格不可用 → 回退原生 adjust
+
+    /** 面板可见（onStartListening）时调用：刷新 max/step 刻度缓存 */
+    fun refreshScale(context: Context) {
         runCatching {
-            audioManager(context)
-                .adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, FLAGS)
+            val max = audioManager(context).getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            cachedMax = max
+            cachedStep = if (max > 0 && max % 15 == 0) max / 15 else 0
         }
-        // 媒体流不触发 DND SecurityException；兜底仅为"点击路径绝不崩溃"的承诺，
-        // 失败则静默放弃本次点击
     }
 
-    /** 磁贴显示用读数（stream 轴，与调节路径同轴）。 */
-    fun levelText(context: Context): String {
-        val am = audioManager(context)
-        val cur = am.getStreamVolume(AudioManager.STREAM_MUSIC)
-        val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        return context.getString(R.string.tile_level_fmt, cur, max)  // "媒体 %1$d/%2$d"
+    /** 调节媒体音量一级并对齐到整数级网格。任何异常都不会抛给调用方。 */
+    fun adjust(context: Context, direction: Int) {
+        val am = runCatching { audioManager(context) }.getOrNull() ?: return
+
+        if (cachedStep <= 0) refreshScale(context)   // 懒初始化 / 运行时重试
+        val step = cachedStep
+        if (step <= 0) {
+            // 回退：网格信息不可用（异常机型或初始化失败）→ 原生步进
+            runCatching { am.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, FLAGS) }
+            return
+        }
+
+        runCatching {
+            val cur = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+            // 升：吸附到网格再走一级；降：反向吸附再走一级
+            // （恒等于「先对齐再 ±step」：floor(cur/step)*step+step / ceil(cur/step)*step-step）
+            val target = (if (direction == AudioManager.ADJUST_RAISE) {
+                cur / step * step + step
+            } else {
+                (cur + step - 1) / step * step - step
+            }).coerceIn(0, cachedMax)
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, target, FLAGS)
+        }
     }
 
     private fun audioManager(context: Context): AudioManager =
