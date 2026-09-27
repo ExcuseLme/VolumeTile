@@ -214,26 +214,33 @@ abstract class VolumeTileServiceBase : TileService() {
 
     /** 用户点击磁贴（含锁屏点击，见 §7.3） */
     override fun onClick() {
-        VolumeController.adjust(applicationContext, direction)
-        refreshTile()                       // 立即把新级数写回磁贴
+        VolumeController.adjust(applicationContext, direction) // 每次点击立即执行，绝不合并
+        scheduleRefresh()                                      // 回写按 250ms 窗口合并，见下
     }
 
-    /** 面板展开、磁贴进入可见状态时（被动磁贴模式） */
+    /** 面板展开、磁贴可见时立即刷新（不节流，保证展开即最新） */
     override fun onStartListening() = refreshTile()
+
+    /** 连点节流：距上次回写 ≥250ms 立即刷；否则合并为一次 trailing 回写（E4 落地） */
+    private fun scheduleRefresh() {
+        // 距上次回写 <250ms 时 postDelayed 合并；onDestroy 清理回调
+    }
 
     private fun refreshTile() {
         val tile = qsTile ?: return
-        tile.label = if (direction == AudioManager.ADJUST_RAISE)
-            getString(R.string.tile_up_label) else getString(R.string.tile_down_label)
-        tile.subtitle = VolumeController.levelText(this)   // API 29+：媒体 7/15
-        tile.stateDescription = VolumeController.levelText(this) // API 30+，TalkBack 播报
+        val level = VolumeController.levelText(this)
+        if (level == lastLevel) return       // 级数未变（到顶/到底）：跳过回写
+        lastLevel = level
+        tile.label = getString(labelRes)
+        tile.subtitle = level               // API 29+：媒体 7/15
+        tile.stateDescription = level       // API 30+，TalkBack 播报
         tile.state = Tile.STATE_ACTIVE
         tile.updateTile()
     }
 }
 ```
 
-**职责边界**：基类只做"磁贴 ↔ 控制器"的接线与状态回写；任何音量语义都在 `VolumeController`。
+**职责边界**：基类只做"磁贴 ↔ 控制器"的接线与状态回写；任何音量语义都在 `VolumeController`。**回写节流的动机**：调音量必须每次点击立即执行，但 `updateTile` 状态回写会让 SystemUI 重刷磁贴视图——高频连点期间（HyperOS 磁贴在状态刷新阶段可能丢点击）将回写合并到 250ms 窗口，风暴中每窗口至多回写一次，风暴结束 250ms 内副标题仍会追平。
 
 ### 6.2 磁贴子类
 
@@ -260,7 +267,7 @@ object VolumeController {
         .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
         .build()
 
-    private const val FLAGS = AudioManager.FLAG_SHOW_UI   // 见 §7.2 反馈策略
+    private const val FLAGS = 0   // 静默调节：不请求系统音量浮层，见 §7.2 反馈策略
 
     /**
      * 分组未命中哨兵。公开文档描述为 AudioVolumeGroup.DEFAULT_VOLUME_GROUP，
@@ -320,8 +327,8 @@ sequenceDiagram
     T->>C: adjust(ctx, ADJUST_RAISE)
     C->>A: getVolumeGroupIdForAttributes(media)
     A-->>C: groupId（或 DEFAULT）
-    C->>A: adjustVolumeGroupVolume(gid, RAISE, FLAG_SHOW_UI)
-    Note over A: 系统弹出 Android 15/16 新版音量面板<br/>级数 +1，到顶自动停
+    C->>A: adjustVolumeGroupVolume(gid, RAISE, 0=静默)
+    Note over A: 级数 +1，到顶自动停（无浮层弹出）<br/>控制中心自带音量条同步变化
     A-->>C: ok
     C-->>T: return
     T->>C: levelText() → "媒体 8/15"
@@ -344,13 +351,15 @@ sequenceDiagram
 
 本项目核心价值之一是 G6（显示实时级数），显示新鲜度 > 微小的绑定开销，故采用被动模式且**不**声明 `ACTIVE_TILE`。
 
-### 7.2 音量反馈策略：`FLAG_SHOW_UI`
+### 7.2 音量反馈策略：静默调节（flags = 0）+ 回写节流
 
 | 方案 | flags | 效果 | 决策 |
 |---|---|---|---|
-| 系统音量面板 | `FLAG_SHOW_UI` | 弹出 Android 15/16 **重新设计后的新版系统音量条**，系统级动画与观感 | ✅ **采用**——磁贴自身无像素，系统面板就是最好的显示 |
-| 静默调节 | `0` | 无任何弹窗，仅磁贴副标题变化 | 备选；若用户反馈面板遮挡可一行切换 |
-| 声音/振动反馈 | `+ FLAG_PLAY_SOUND / FLAG_VIBRATE` | 每级有提示音/振动 | 暂不采用（默认音量键 tick 行为已足够，避免双重反馈） |
+| 静默调节 | `0` | 无任何浮层；反馈 = 磁贴副标题级数 + 控制中心自带音量条实时同步 | ✅ **v1.1 起采用**——澎湃控制中心本身提供音量条，无需额外弹窗；同时作为高频点击修复实验 **E1**（排除系统浮层干扰连点），并削减每次点击的系统侧开销 |
+| 系统音量面板 | `FLAG_SHOW_UI` | 弹出系统音量条浮层 | 备选（v1.0 曾采用）；若验证 CD 另有原因可一行切回 |
+| 声音/振动反馈 | `+ FLAG_PLAY_SOUND / FLAG_VIBRATE` | 每级有提示音/振动 | 暂不采用（避免双重反馈） |
+
+**高频点击回写节流（E4 落地）**：调音量每次点击**立即执行**、绝不合并；磁贴 `updateTile()` 回写按 **250ms 窗口合并**（单击立即刷、连点合并为一次 trailing 刷新），并跳过级数未变化的回写——降低连点风暴中对 SystemUI 磁贴视图的重刷次数（HyperOS 磁贴在状态刷新阶段可能丢弃点击）。
 
 **级别步进**：不实现任何自定义步进逻辑——`adjustVolumeGroupVolume` / `adjustStreamVolume` 按系统自身刻度走一级，天然满足 G3（15 级机型 15 级，随系统设置变化自动适配）。到顶/到底时系统自动停止，不循环、不越界。
 
@@ -361,8 +370,8 @@ sequenceDiagram
 
 ### 7.4 界面占位与冲突
 
-- `FLAG_SHOW_UI` 的系统音量面板是系统窗口，**不是本应用 UI**，与 G2 不冲突。
-- 面板展开状态下点击磁贴：系统音量条作为顶层浮窗显示，磁贴副标题同步刷新，二者不互相遮蔽信息。
+- v1.1 起为静默模式（flags = 0），不产生任何浮层窗口，与 G2（零自有 UI）的关系更干净。
+- 面板展开状态下点击磁贴：磁贴副标题按 250ms 节流窗口刷新，控制中心自带音量条实时同步，二者互不遮蔽。
 
 ---
 
@@ -458,7 +467,7 @@ sequenceDiagram
 | `Tile.setStateDescription(级数文本)` | TalkBack 聚焦磁贴时先播状态（"媒体 7/15"）再播标签 |
 | `Tile` 主/副标签均为可读文本 | 非纯图标磁贴 |
 | 不设置 `TOGGLEABLE_TILE` | 避免被无障碍框架当作 Switch 开关误播"开/关"状态 |
-| 系统音量面板 | `FLAG_SHOW_UI` 弹出的是系统面板，自带完整无障碍支持 |
+| 静默模式（v1.1 起） | 无浮层；级数经 `stateDescription` 播报，控制中心自带音量条由系统提供无障碍支持 |
 
 ---
 
@@ -469,7 +478,7 @@ sequenceDiagram
 | # | 步骤 | 预期 |
 |---|---|---|
 | T1 | 安装 APK，下拉面板 → 编辑 → 添加两个磁贴 | 两个磁贴出现在编辑列表，标签/图标正确；Android 16 QPR1+ 归入「显示」类 |
-| T2 | 点击「音量 +」×3 | 媒体音量 +3 级；系统新版音量条弹出；磁贴副标题同步为新值 |
+| T2 | 点击「音量 +」×3 | 媒体音量 +3 级；磁贴副标题逐步更新；控制中心自带音量条同步变化，无额外弹窗 |
 | T3 | 点击「音量 −」至 0 | 停在 0，不循环、无崩溃 |
 | T4 | 持续「音量 +」到最大 | 停在最大值；副标题显示 `媒体 max/max` |
 | T5 | 用实体音量键改音量后，再次下拉面板 | 磁贴副标题显示实体键改后的最新值 |
