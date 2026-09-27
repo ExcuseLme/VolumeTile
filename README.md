@@ -30,7 +30,7 @@
 ## 签名说明
 
 `keystore/release.p12` 为本项目专用测试密钥，**有意随仓库提交**——
-保证每次 CI 构建签名一致、手机可覆盖安装。密码写在 `app/build.gradle.kts` 中。
+保证每次 CI 构建签名一致、手机可覆盖安装。密码写在 `.github/workflows/build.yml` 的签名步骤中（Gradle 侧不配置签名，产物为 unsigned APK，由 CI 用 `apksigner --ks-type PKCS12` 显式签名）。
 该密钥仅用于本项目自用分发，请勿用于任何有用户的应用。
 
 ## 目录结构

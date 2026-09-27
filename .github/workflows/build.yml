@@ -54,14 +54,28 @@ jobs:
         with:
           gradle-version: "8.13"
 
-      - name: Build release APK
+      - name: Build release APK (unsigned)
         run: gradle assembleRelease --stacktrace
 
-      - name: Package APK
+      # 显式签名：apksigner 指定 --ks-type PKCS12。
+      # run #3 失败根因：Gradle Kotlin DSL 的 SigningConfig 无 storeFormat 属性
+      # （Unresolved reference），故签名移出 Gradle、在 CI 侧显式完成，格式零歧义。
+      - name: Sign APK with apksigner
         run: |
+          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          UNSIGNED="app/build/outputs/apk/release/app-release-unsigned.apk"
           echo "== 产物目录 =="
           ls -la app/build/outputs/apk/release/
-          cp app/build/outputs/apk/release/app-release.apk VolumeTile-release.apk
+          "$APKSIGNER" sign \
+            --ks keystore/release.p12 \
+            --ks-type PKCS12 \
+            --ks-key-alias volumetile \
+            --ks-pass 'pass:VolumeTile#2026' \
+            --key-pass 'pass:VolumeTile#2026' \
+            --out VolumeTile-release.apk \
+            "$UNSIGNED"
+          echo "== 签名校验 =="
+          "$APKSIGNER" verify --print-certs VolumeTile-release.apk | head -n 8
 
       # 无论后续滚动发布成败，构建产物都已可下载
       - name: Upload build artifact
