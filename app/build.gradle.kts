@@ -6,11 +6,11 @@ plugins {
 }
 
 android {
-    namespace = "dev.volumetile"
+    namespace = "com.tedexcuseme.volumetile"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "dev.volumetile"
+        applicationId = "com.tedexcuseme.volumetile"
         minSdk = 34
         targetSdk = 36
         versionCode = 3

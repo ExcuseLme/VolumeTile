@@ -1,11 +1,11 @@
-package dev.volumetile.tile
+package com.tedexcuseme.volumetile.tile
 
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
-import dev.volumetile.volume.VolumeController
+import com.tedexcuseme.volumetile.volume.VolumeController
 
 /**
  * 磁贴服务基类：负责「磁贴 ↔ 音量控制器」的接线与状态回写。

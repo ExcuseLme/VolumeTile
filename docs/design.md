@@ -114,11 +114,11 @@ graph TD
 
 ```kotlin
 android {
-    namespace = "dev.volumetile"
+    namespace = "com.tedexcuseme.volumetile"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "dev.volumetile"
+        applicationId = "com.tedexcuseme.volumetile"
         minSdk = 34
         targetSdk = 36
         versionCode = 1
@@ -205,7 +205,7 @@ dependencies {
 ### 6.1 `VolumeTileServiceBase`（抽象基类）
 
 ```kotlin
-package dev.volumetile.tile
+package com.tedexcuseme.volumetile.tile
 
 abstract class VolumeTileServiceBase : TileService() {
 
@@ -257,7 +257,7 @@ class VolumeDownTileService : VolumeTileServiceBase() {
 **单 IPC 设计（v1.2 延迟审查 R1）**：v1.0–v1.1 曾以 API 34 音量分组接口为主路径（查询 + 调节共 2 次串行 Binder IPC）。全链路延迟审查结论：官方文档明确手机上分组关联到流类型时分组接口内部即回退 `adjustStreamVolume`——组查询是纯延迟、零行为收益；且本应用读数始终取自 stream 轴，读写同轴更自洽。故 v1.2 起直接以单次 `adjustStreamVolume` 完成调节。
 
 ```kotlin
-package dev.volumetile.volume
+package com.tedexcuseme.volumetile.volume
 
 object VolumeController {
 
@@ -491,7 +491,7 @@ VolumeTile/
 │   ├── build.gradle.kts
 │   └── src/main/
 │       ├── AndroidManifest.xml
-│       ├── java/dev/volumetile/
+│       ├── java/com/tedexcuseme/volumetile/
 │       │   ├── volume/VolumeController.kt
 │       │   └── tile/
 │       │       ├── VolumeTileServiceBase.kt

@@ -1,4 +1,4 @@
-package dev.volumetile.tile
+package com.tedexcuseme.volumetile.tile
 
 import android.media.AudioManager
 

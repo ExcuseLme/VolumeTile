@@ -1,8 +1,8 @@
-package dev.volumetile.volume
+package com.tedexcuseme.volumetile.volume
 
 import android.content.Context
 import android.media.AudioManager
-import dev.volumetile.R
+import com.tedexcuseme.volumetile.R
 
 /**
  * 音量控制核心（无 UI 依赖）。
@@ -11,7 +11,7 @@ import dev.volumetile.R
  * 每次点击仅一次 Binder 调用 [AudioManager.adjustStreamVolume] 直接完成音量变更。
  *
  * 历史说明（v1.0–v1.1 曾采用双路径）：优先走 API 34 音量分组接口
- * （getVolumeGroupIdForAttributes 查询 + adjustVolumeGroupVolume 调节，2 次串行 IPC）。
+ * （getVolumeGroupIdForAttributes 查询 + adjustVolumeGroupVolume 调节，2 次串行 Binder IPC）。
  * 经全链路延迟审查（docs/design.md §6.3）确认在手机上应弃用分组路径：
  *  - 官方文档明确：分组关联到流类型时，分组接口内部即回退 adjustStreamVolume——
  *    组查询在本设备上是纯延迟、零行为收益；

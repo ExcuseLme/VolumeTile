@@ -39,7 +39,7 @@
 docs/design.md                设计文档
 keystore/release.p12          发布签名密钥（固定签名）
 app/src/main/AndroidManifest.xml
-app/src/main/java/dev/volumetile/
+app/src/main/java/com/tedexcuseme/volumetile/
   ├─ volume/VolumeController.kt      音量调节核心（单 IPC 直调，v1.2 延迟优化）
   └─ tile/VolumeTileServiceBase.kt   磁贴基类（点击/刷新）
       VolumeUpTileService.kt         「音量 +」磁贴
