@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 磁贴定义：label + icon（API 24-27 系统仅识别此文件；新系统与 service 属性保持一致） -->
+<tile xmlns:android="http://schemas.android.com/apk/res/android"
+    android:label="@string/tile_up_label"
+    android:icon="@drawable/ic_volume_up" />

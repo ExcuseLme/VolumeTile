@@ -1,0 +1,81 @@
+name: Build Release APK
+
+# 触发条件：push 到 release 分支，或在 Actions 页手动触发
+on:
+  push:
+    branches:
+      - release
+  workflow_dispatch:
+
+# 滚动发布需要写仓库（创建/更新 continuous 预发布）
+permissions:
+  contents: write
+
+# 同一分支的新推送自动取消进行中的旧构建
+concurrency:
+  group: release-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and publish APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # AGP 8.13 官方要求 JDK 17
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # compileSdk 36 平台 + AGP 8.13 默认 Build Tools 35.0.0
+      - name: Install Android platform and build tools
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;35.0.0"
+          sdkmanager --list_installed | grep -E "platforms;|build-tools;" || true
+
+      # 仓库不携带 gradle wrapper（无本地环境），由 setup-gradle 安装精确版本
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
+
+      - name: Build release APK
+        run: gradle assembleRelease --stacktrace
+
+      - name: Package APK
+        run: |
+          echo "== 产物目录 =="
+          ls -la app/build/outputs/apk/release/
+          cp app/build/outputs/apk/release/app-release.apk VolumeTile-release.apk
+
+      # 无论后续滚动发布成败，构建产物都已可下载
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VolumeTile-release-${{ github.run_number }}
+          path: VolumeTile-release.apk
+          if-no-files-found: error
+
+      # 更新滚动预发布 continuous：手机可直接从 Releases 页下载最新 APK
+      - name: Update rolling release (continuous)
+        if: github.ref == 'refs/heads/release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view continuous > /dev/null 2>&1; then
+            gh release create continuous \
+              --prerelease \
+              --title "Continuous Build" \
+              --notes "滚动构建产物：每次 push 到 release 分支自动更新，仅供手机下载测试。"
+          fi
+          gh release upload continuous VolumeTile-release.apk --clobber
