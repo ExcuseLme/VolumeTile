@@ -5,11 +5,6 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// 发布签名：keystore/release.p12 随仓库提交（个人测试项目专用密钥），
-// 保证 CI 每次构建签名一致，手机端可直接覆盖安装。
-// 若密钥文件缺失则回退 debug 签名，保证构建绝不会因签名问题中断。
-val releaseKeystore = rootProject.file("keystore/release.p12")
-
 android {
     namespace = "dev.volumetile"
     compileSdk = 36
@@ -22,27 +17,16 @@ android {
         versionName = "1.0"
     }
 
-    signingConfigs {
-        if (releaseKeystore.exists()) {
-            create("release") {
-                storeFile = releaseKeystore
-                storeFormat = "PKCS12"
-                storePassword = "VolumeTile#2026"
-                keyAlias = "volumetile"
-                keyPassword = "VolumeTile#2026"
-            }
-        }
-    }
-
     buildTypes {
         release {
             isMinifyEnabled = false
             isShrinkResources = false
-            signingConfig = if (releaseKeystore.exists()) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
-            }
+            // 刻意不配置 signingConfig：
+            // AGP 8.13 的 Gradle Kotlin DSL 中 SigningConfig 类型没有 storeFormat 属性
+            // （run #3 失败根因：Unresolved reference: storeFormat，该属性仅存在于
+            //  Groovy 动态分发的内部实现类上）。
+            // 因此 Gradle 产出 app-release-unsigned.apk，由 CI 使用
+            // apksigner --ks-type PKCS12 显式指定格式签名，见 .github/workflows/build.yml。
         }
     }
 

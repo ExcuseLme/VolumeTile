@@ -1,6 +1,6 @@
 # VolumeTile · 音量磁贴
 
-[![Build Release APK](https://github.com/ExcuseLme/VolumeTile/actions/workflows/build.yml/badge.svg?branch=release)](https://github.com/ExcuseLme/VolumeTile/actions/workflows/build.yml)
+[![Build Release APK](https://github.com/ExcuseLme/VolumeTile/actions/workflows/build.yml/badge.svg?branch=release/1.0)](https://github.com/ExcuseLme/VolumeTile/actions/workflows/build.yml)
 
 零界面（No-UI）Android 工具应用：无任何窗口，仅向快捷设置面板提供两个可固定磁贴，
 分别控制媒体音量 **+1 级 / −1 级**，级数完全跟随系统实际值（15 级机型即 15 级）。
@@ -13,7 +13,7 @@
 
 本仓库不携带 Gradle wrapper，也不需要本地 Android SDK，全部构建在 CI 完成：
 
-1. **触发**：push 到 `release` 分支，或在 **Actions → Build Release APK → Run workflow** 手动触发
+1. **触发**：push 到 `release/1.0`（及任意 `release/**` 分支），或在 **Actions → Build Release APK → Run workflow** 手动触发
 2. **等构建变绿**（Build and publish APK 任务成功即代表构建通过）
 3. **下载 APK**（二选一）：
    - 该次 run 的 **Artifacts → `VolumeTile-release-<运行号>`**
@@ -30,7 +30,7 @@
 ## 签名说明
 
 `keystore/release.p12` 为本项目专用测试密钥，**有意随仓库提交**——
-保证每次 CI 构建签名一致、手机可覆盖安装。密码写在 `app/build.gradle.kts` 中。
+保证每次 CI 构建签名一致、手机可覆盖安装。密码写在 `.github/workflows/build.yml` 的签名步骤中（Gradle 侧不配置签名，产物为 unsigned APK，由 CI 用 `apksigner --ks-type PKCS12` 显式签名）。
 该密钥仅用于本项目自用分发，请勿用于任何有用户的应用。
 
 ## 目录结构
