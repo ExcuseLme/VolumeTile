@@ -1,9 +1,10 @@
 # VolumeTile · 音量磁贴
 
-[![Build Release APK](https://github.com/ExcuseLme/VolumeTile/actions/workflows/build.yml/badge.svg?branch=release/1.0)](https://github.com/ExcuseLme/VolumeTile/actions/workflows/build.yml)
+[![Build Release APK](https://github.com/ExcuseLme/VolumeTile/actions/workflows/build.yml/badge.svg?branch=release/1.4)](https://github.com/ExcuseLme/VolumeTile/actions/workflows/build.yml)
 
 零界面（No-UI）Android 工具应用：无任何窗口，仅向快捷设置面板提供两个可固定磁贴，
-分别控制媒体音量 **+1 级 / −1 级**，级数完全跟随系统实际值（15 级机型即 15 级）。
+分别控制媒体音量 **+1 级 / −1 级**，调节**自动对齐到整数级**（滑条停在 4.3 这类分数位置时，
+点击后吸附回 4 / 5 整数格），级数跟随系统实际值。
 
 - 无 Activity、无运行时权限弹窗、无后台常驻、无第三方依赖
 - 技术栈：Kotlin · Gradle 8.13 · AGP 8.13.0 · Kotlin 2.3.0 · minSdk 34 · targetSdk 36
