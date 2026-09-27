@@ -1,0 +1,17 @@
+# Gradle
+.gradle/
+build/
+.kotlin/
+
+# Android Studio / IDE
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# 本地环境
+local.properties
+.DS_Store
+
+# 注意：keystore/ 不被忽略——签名密钥需随仓库提交以保证 CI 构建产物签名稳定

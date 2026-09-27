@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">音量磁贴</string>
+    <string name="tile_up_label">音量 +</string>
+    <string name="tile_down_label">音量 -</string>
+    <!-- 磁贴副标题：媒体 7/15（级数完全跟随系统实际值） -->
+    <string name="tile_level_fmt">媒体 %1$d/%2$d</string>
+</resources>
