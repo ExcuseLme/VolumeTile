@@ -107,11 +107,13 @@ class VolumeAdjustService : Service() {
         }
         manager?.createNotificationChannel(channel)
 
+        // 静音由 channel 保证（IMPORTANCE_MIN + setSound(null) + enableVibration(false)）；
+        // framework 的 Notification.Builder 没有 setSilent()（那是 androidx NotificationCompat 的 API），
+        // 本项目零第三方依赖，故不引入 NotificationCompat。
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(com.tedexcuseme.volumetile.R.string.adjust_notif_title))
             .setSmallIcon(com.tedexcuseme.volumetile.R.drawable.ic_volume_up)
             .setOngoing(true)
-            .setSilent(true)
             .setPriority(Notification.PRIORITY_MIN)
             .build()
     }

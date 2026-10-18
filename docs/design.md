@@ -118,19 +118,19 @@ VolumeTile 是一个**零界面（No-UI）**的 Android 工具应用：安装后
 
 ```mermaid
 graph TD
-    subgraph SystemUI [系统 SystemUI 进程]
+    subgraph SystemUI["系统 SystemUI 进程"]
         QS[快捷设置面板<br/>用户点击磁贴]
     end
 
-    subgraph VolumeTile [VolumeTile 进程（无 Activity）]
+    subgraph VolumeTile["VolumeTile 进程（无 Activity）"]
         T1[VolumeUpTileService]
         T2[VolumeDownTileService]
         B[VolumeTileServiceBase<br/>抽象基类：点击调音量 / 静态外观]
         C[VolumeController<br/>对齐网格调节封装]
     end
 
-    subgraph Framework [Android 框架]
-        AM[AudioManager<br/>getStreamVolume + setStreamVolume（2 IPC）]
+    subgraph Framework["Android 框架"]
+        AM["AudioManager<br/>getStreamVolume + setStreamVolume（2 IPC）"]
         TILE[Tile<br/>state=INACTIVE / updateTile]
     end
 
@@ -417,20 +417,23 @@ object VolumeController {
 sequenceDiagram
     participant U as 用户
     participant S as SystemUI
-    participant T as TileService(被绑定)
+    participant T as 磁贴服务
+    participant V as VolumeAdjustService
     participant C as VolumeController
     participant A as AudioManager
 
     U->>S: 点击「音量 +」磁贴
     S->>T: onClick()
-    T->>C: adjust(ctx, ADJUST_RAISE)
+    T->>V: startForegroundService(direction)
+    V->>V: startForeground() 转前台（通过加固校验）
+    V->>C: adjust(ctx, ADJUST_RAISE)
     C->>A: getStreamVolume()          ← IPC#1 读 cur（如 43）
     A-->>C: 43
     C->>C: 网格公式 target = floor(43/10)*10+10 = 50
     C->>A: setStreamVolume(50, flags=0) ← IPC#2 绝对定位（吸附+清分数）
     Note over A: 落到整数级 50（UI 5.0），控制中心音量条同步<br/>无浮层；到顶/底 coerce 到 [0,max]
     A-->>C: ok
-    C-->>T: return（无任何回写）
+    V->>V: stopSelf() 立即退出（不常驻）
 ```
 
 ---
