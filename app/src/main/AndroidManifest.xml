@@ -1,15 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- normal 级权限：安装即授予，无任何运行时弹窗 -->
-    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-
     <!--
       前台服务权限（Android 17 Background audio hardening 适配）：
-      specialUse 类型需要一个 normal 级权限，安装即授予，无运行时弹窗。
+      两者均为 normal 级、安装即授予，无任何运行时弹窗。
 
+      ⚠️ 不需要 MODIFY_AUDIO_SETTINGS：媒体流（STREAM_MUSIC）的音量调节不校验该权限。
       ⚠️ 不声明 FOREGROUND_SERVICE_MEDIA_PLAYBACK：本应用并不播放音频，
-      声明媒体播放类型语义不实，且会让系统按媒体会话治理该服务。
+         声明媒体播放类型语义不实，且会让系统按媒体会话治理该服务。
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
@@ -31,9 +29,6 @@
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
-            <meta-data
-                android:name="android.service.quicksettings.TILE"
-                android:resource="@xml/tile_volume_up" />
             <!-- API 36.1（Android 16 QPR1）磁贴编辑页分类；旧系统自动忽略 -->
             <meta-data
                 android:name="android.service.quicksettings.TILE_CATEGORY"
@@ -50,9 +45,6 @@
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
-            <meta-data
-                android:name="android.service.quicksettings.TILE"
-                android:resource="@xml/tile_volume_down" />
             <meta-data
                 android:name="android.service.quicksettings.TILE_CATEGORY"
                 android:value="android.service.quicksettings.CATEGORY_DISPLAY" />

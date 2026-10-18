@@ -1,12 +1,13 @@
 # VolumeTile 设计文档
 
-> **文档版本**: v2.0（随实现滚动更新）
+> **文档版本**: v2.1（随实现滚动更新）
 > **项目代号**: VolumeTile
 > **目标平台**: Android 16（API 36），minSdk 34
 > **文档状态**: 已实现并持续演进
 > - v1.3：整数级对齐 + 纯静态无状态磁贴
 > - v1.4：CI/文档维护轮，APK 行为与 1.3 一致
 > - **v2.0：适配澎湃 4（HyperOS 4 / Android 17）的 Background audio hardening —— 修复磁贴点击无效**
+> - **v2.1：清理失效代码（旧磁贴 XML、刻度缓存、无效权限），行为不变**
 
 ---
 
@@ -148,7 +149,7 @@ graph TD
 
 | 组件 | 类型 | 职责 |
 |---|---|---|
-| `VolumeTileServiceBase` | `abstract class : TileService` | 磁贴生命周期：`onClick` 交给前台服务执行（v2.0），`onStartListening` 刷新刻度缓存 + 无条件确保 `STATE_INACTIVE` 静态外观 |
+| `VolumeTileServiceBase` | `abstract class : TileService` | 磁贴生命周期：`onClick` 交给前台服务执行（v2.0），`onStartListening` 无条件确保 `STATE_INACTIVE` 静态外观 |
 | `VolumeUpTileService` | `class : VolumeTileServiceBase` | 音量 +1 磁贴入口，仅声明方向常量 |
 | `VolumeDownTileService` | `class : VolumeTileServiceBase` | 音量 −1 磁贴入口，仅声明方向常量 |
 | `VolumeAdjustService` | `class : Service`（v2.0 新增） | 极短前台服务：转前台 → 调音量 → 立即 `stopSelf`；用于通过 Android 17 后台音量加固校验 |
@@ -205,12 +206,12 @@ android {
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- normal 级权限，安装即授予，无弹窗；调音量惯例声明 -->
-    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-
     <!--
       v2.0：前台服务权限（Android 17 后台音量加固适配）。
       两者均为 normal 级、安装即授予，不引入任何运行时权限弹窗。
+
+      刻意不声明 MODIFY_AUDIO_SETTINGS：STREAM_MUSIC 的音量调节不校验该权限，
+      保留它只是无效声明。
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
@@ -231,17 +232,13 @@ android {
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
-            <!-- 磁贴定义（label + icon），旧系统的唯一来源 -->
-            <meta-data
-                android:name="android.service.quicksettings.TILE"
-                android:resource="@xml/tile_volume_up" />
             <!-- API 36.1 新增：磁贴编辑页分类；旧系统自动忽略该 meta-data -->
             <meta-data
                 android:name="android.service.quicksettings.TILE_CATEGORY"
                 android:value="android.service.quicksettings.CATEGORY_DISPLAY" />
         </service>
 
-        <!-- 音量 −1 磁贴：结构同上，指向 tile_volume_down / ic_volume_down -->
+        <!-- 音量 −1 磁贴：结构同上，指向 ic_volume_down -->
         <service
             android:name=".tile.VolumeDownTileService"
             ... />
@@ -273,7 +270,7 @@ android {
 | `TILE_CATEGORY` = `CATEGORY_DISPLAY` | 可选但推荐（36.1 官方 recommended） | 把磁贴归入 Android 16 QPR1+ 编辑页的「显示」类；纯分类美观项，改 `CATEGORY_UTILITIES` 亦可 |
 | 不声明 `ACTIVE_TILE` | **刻意不使用主动磁贴模式** | 被动磁贴在每次面板展开时绑定刷新，磁贴级数显示永远最新（包括用户用实体键调过的情况）；主动磁贴仅在点击时绑定，省电但显示可能过期——本项目显示新鲜度优先，见 §7.1 |
 | 不声明 `TOGGLEABLE_TILE` | 不使用 | 语义是"开关型磁贴"的无障碍 Switch 行为；音量 ±1 不是开/关状态 |
-| `MODIFY_AUDIO_SETTINGS` | 声明 | normal 级、安装即得；虽媒体流调节实际不强制，作为惯例声明防御性保留 |
+| 不声明 `MODIFY_AUDIO_SETTINGS` | v2.0 移除 | STREAM_MUSIC 的音量调节不校验该权限，保留只是无效声明；本项目零权限（仅剩两个 normal 级 FGS 权限） |
 | `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_SPECIAL_USE` | v2.0 声明 | 均为 **normal 级、安装即授予**，不产生运行时弹窗；供 `VolumeAdjustService` 转前台，以通过 Android 17 后台音量加固校验（§0.3） |
 | 不声明 `FOREGROUND_SERVICE_MEDIA_PLAYBACK` | 刻意不用 | 本应用不播放音频，声明媒体播放类型语义不实，且会让系统按媒体会话治理该服务 |
 | `allowBackup="false"` | 关闭 | 无任何持久化数据，无可备份内容 |
@@ -294,16 +291,14 @@ abstract class VolumeTileServiceBase : TileService() {
 
     /** 点击磁贴：交给前台服务执行（通过 Android 17 后台音量加固校验），失败则回退直接调节 */
     override fun onClick() {
-        val started = VolumeAdjustService.adjust(applicationContext, direction)
-        if (!started) {
+        if (!VolumeAdjustService.adjust(applicationContext, direction)) {
             // 回退：FGS 起不来时保持旧行为（未加固系统上仍然有效）
             VolumeController.adjust(applicationContext, direction)
         }
     }
 
-    /** 面板展开/磁贴可见：刷新刻度缓存 + 确保静态（未高亮）外观；兼作 Binder 预热 */
+    /** 面板展开/磁贴可见：确保静态（未高亮）外观 */
     override fun onStartListening() {
-        VolumeController.refreshScale(applicationContext)
         qsTile?.let {
             it.state = Tile.STATE_INACTIVE   // 无条件写（防 SystemUI 侧重建后的 UNAVAILABLE 缺省态）
             it.updateTile()
@@ -312,9 +307,11 @@ abstract class VolumeTileServiceBase : TileService() {
 }
 ```
 
-**职责边界（v1.3 静态化 + v2.0 加固适配）**：基类只做两件事——点击（经前台服务）调音量、监听时保证静态外观与刻度缓存。**v1.0–1.2 的整套动态回写机制已全部删除**（subtitle/stateDescription 更新、250ms 节流、Handler/post、lastLevel 比对、onDestroy 回调清理）：D 方案下 label 永不改写、级数不显示，回写的唯一剩余作用是把状态写成 `STATE_INACTIVE`（未高亮的中性工具外观）。**状态写必须无条件执行**：本地 `Tile` 对象无法感知 SystemUI 侧的磁贴重建，缺省态若为 `UNAVAILABLE`，`CustomTile.handleClick` 会在 SystemUI 侧直接丢弃点击（AOSP 源码已核实），磁贴会"失灵"。
+**职责边界（v1.3 静态化 + v2.0 加固适配）**：基类只做两件事——点击（经前台服务）调音量、监听时保证静态外观。**v1.0–1.2 的整套动态回写机制已全部删除**（subtitle/stateDescription 更新、250ms 节流、Handler/post、lastLevel 比对、onDestroy 回调清理）：label 永不改写、级数不显示，回写的唯一剩余作用是把状态写成 `STATE_INACTIVE`（未高亮的中性工具外观）。**状态写必须无条件执行**：本地 `Tile` 对象无法感知 SystemUI 侧的磁贴重建，缺省态若为 `UNAVAILABLE`，`CustomTile.handleClick` 会在 SystemUI 侧直接丢弃点击（AOSP 源码已核实），磁贴会"失灵"。
 
 **v2.0 变更**：`onClick` 不再直接调 `VolumeController`，而是先经 `VolumeAdjustService`。原因是 Android 17 的后台音量加固（§0）会静默丢弃磁贴线程的音量调用；前台服务能把进程状态提升到 `UID_STATE_FOREGROUND_SERVICE`，从而通过校验。
+
+**v2.1 精简**：删除 `onStartListening` 中的 `refreshScale()` 调用与 `VolumeController` 的 `cachedMax`/`cachedStep`/`cachedAudioManager` 缓存。刻度改为每次调节时现取（多 1 次 `getStreamMaxVolume` IPC，点击路径 2→3 次）。代价可接受：`VolumeAdjustService` 是一次性服务，跨调用缓存没有收益，且消除了「面板展开才发现刻度失效」的状态时序问题。
 
 ### 6.2 磁贴子类
 
@@ -361,53 +358,37 @@ object VolumeController {
 
     private const val FLAGS = 0   // 静默调节：不请求系统音量浮层，见 §7.2 反馈策略
 
-    private var cachedAudioManager: AudioManager? = null
-
-    /** 刻度缓存：面板每次可见时由 refreshScale 刷新（非点击路径，1 IPC） */
-    private var cachedMax = 0
-    private var cachedStep = 0   // 0 = 网格不可用 → 回退原生 adjust
-
-    fun refreshScale(context: Context) {
-        runCatching {
-            val max = audioManager(context).getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-            cachedMax = max
-            cachedStep = if (max > 0 && max % 15 == 0) max / 15 else 0
-        }
-    }
-
     /** 调节媒体音量一级并对齐到整数级网格。任何异常都不会抛给调用方。 */
     fun adjust(context: Context, direction: Int) {
-        val am = runCatching { audioManager(context) }.getOrNull() ?: return
-        if (cachedStep <= 0) refreshScale(context)   // 懒初始化 / 运行时重试
-        val step = cachedStep
-        if (step <= 0) {
-            runCatching { am.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, FLAGS) }
-            return
-        }
         runCatching {
+            val am = context.getSystemService(AudioManager::class.java) ?: return
+            val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+
+            // 网格无定义（异常机型 / 刻度异常）→ 原生步进
+            if (max <= 0 || max % 15 != 0) {
+                am.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, FLAGS)
+                return
+            }
+
+            val step = max / 15
             val cur = am.getStreamVolume(AudioManager.STREAM_MUSIC)
             val target = (if (direction == AudioManager.ADJUST_RAISE) {
                 cur / step * step + step              // 升：floor 到网格再走一级
             } else {
                 (cur + step - 1) / step * step - step  // 降：ceil 到网格再退一级
-            }).coerceIn(0, cachedMax)
+            }).coerceIn(0, max)
             am.setStreamVolume(AudioManager.STREAM_MUSIC, target, FLAGS)
         }
     }
-
-    private fun audioManager(context: Context): AudioManager =
-        cachedAudioManager
-            ?: context.getSystemService(AudioManager::class.java)!!
-                .also { cachedAudioManager = it }
 }
 ```
 
 **设计要点**：
 
-1. **网格公式与数据校验**：升 `floor(cur/step)×step+step`、降 `ceil(cur/step)×step−step`（整数运算）；K1 实测数据全部通过——`45+ → 50`、`45− → 40`、`43− → 40`、`40± → 50/30`、顶/底 `coerceIn(0,max)` 不越界。
-2. **step 公式官方背书**：`step = max / 15`（小米《MIUI无极音量适配说明》），与系统自身 adjust 步长同格（15 次触顶实测一致）；`max % 15 != 0` → `step = 0` → 回退原生 adjust（网格无定义的机型保持原行为）。
+1. **网格公式与数据校验**：升 `floor(cur/step)×step+step`、降 `ceil(cur/step)×step−step`（整数运算）；实测数据全部通过——`45+ → 50`、`45− → 40`、`43− → 40`、`40± → 50/30`、顶/底 `coerceIn(0,max)` 不越界。
+2. **step 公式官方背书**：`step = max / 15`（小米《MIUI无极音量适配说明》），与系统自身 adjust 步长同格（15 次触顶实测一致）；`max % 15 != 0` → 回退原生 adjust（网格无定义的机型保持原行为）。
 3. **绝对定位清分数**：`setStreamVolume` 直接写目标整数，滑条造成的偏移（如 43）被一次性吸附，无需"读取分数"的隐藏 API。
-4. **IPC 构成**：点击路径 = 读 cur（1）+ set（1）= 2 次；`max`/`step` 只在面板可见时经 `refreshScale` 刷新（每面板打开 1 次，不在点击路径）。
+4. **IPC 构成（v2.1）**：点击路径 = 取 max（1）+ 读 cur（1）+ set（1）= 3 次。刻度不再缓存：`VolumeController` 只被一次性的 `VolumeAdjustService` 调用，跨调用缓存既无收益，又要维护「何时失效」的额外状态。
 5. **绝不外抛 / 静默**：全程 `runCatching`，`flags = 0`；媒体流不触发 DND 异常。
 6. **不使用 `adjustSuggestedStreamVolume(USE_DEFAULT_STREAM_TYPE)`**：跟随实体键"当前流"引入 DND 与铃声模式变量，固定媒体流行为可预期。
 
@@ -445,11 +426,11 @@ sequenceDiagram
 | 特性 | 被动磁贴（**本项目采用**） | 主动磁贴 `ACTIVE_TILE` |
 |---|---|---|
 | 绑定时机 | 面板展开且磁贴可见时 | 仅点击时（状态由 App 自维护） |
-| 状态/刻度刷新 | ✅ 每次面板可见时刷新（刻度缓存 + 静态外观） | ⚠️ 仅在 App 进程存活并 `requestListeningState` 后刷新 |
+| 状态刷新 | ✅ 每次面板可见时刷新静态外观 | ⚠️ 仅在 App 进程存活并 `requestListeningState` 后刷新 |
 | 复杂度 | 低（默认行为） | 需进程管理与推送逻辑 |
 | 成本 | 面板展开时一次轻量绑定（仅当磁贴在面板上） | 更省电 |
 
-本项目采用被动模式且**不**声明 `ACTIVE_TILE`：面板展开即绑定——这既是**进程预热（gkd 式唤醒、首击零等待）的来源**，也让刻度缓存每次可见时得到刷新；v1.3 虽已不显示级数，预热价值仍是选择被动模式的主因。
+本项目采用被动模式且**不**声明 `ACTIVE_TILE`：面板展开即绑定，这既是**进程预热（首击零等待）的来源**，也保证磁贴状态在每次可见时都被重置为 `STATE_INACTIVE`。
 
 ### 7.2 音量反馈策略：静默调节（flags = 0）+ 静态磁贴（D 方案）
 
@@ -494,7 +475,7 @@ sequenceDiagram
 
 | 元素 | 内容 | 来源 |
 |---|---|---|
-| 主标签（label） | `音量 +` / `音量 -` | 磁贴 XML / service label，运行时永不改写（D 方案） |
+| 主标签（label） | `音量 +` / `音量 -` | service 上的 `android:label`，运行时永不改写 |
 | 状态 | `STATE_INACTIVE`（未高亮的中性外观） | 每次 `onStartListening` 无条件写入（v1.3） |
 | 图标 | 见 §8.3 | 矢量资源 |
 
@@ -506,16 +487,21 @@ sequenceDiagram
 - 磁贴图标由系统按主题着色/适配，无需自定义颜色。
 - 应用图标：最小化处理——任意简单矢量占位即可（应用无启动器入口，图标仅在设置页显示）。
 
-### 8.4 磁贴 XML（`res/xml/tile_volume_up.xml`）
+### 8.4 磁贴 icon/label 来源
 
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<tile xmlns:android="http://schemas.android.com/apk/res/android"
-    android:label="@string/tile_up_label"
-    android:icon="@drawable/ic_volume_up" />
-```
+磁贴的 label 与 icon **只由 service 节点的 `android:label` / `android:icon` 提供**。
 
-> service 节点与磁贴 XML 同时携带 label/icon：XML 为旧系统来源，service 属性为新系统来源，保持一致避免显示差异。
+> **v2.1 移除**：曾同时提供 `res/xml/tile_*.xml` 与 `meta-data android.service.quicksettings.TILE`。
+> 该 meta-data 是 API 24–27 时代的磁贴描述方式；AOSP 17 的 `TileService` 只定义
+> `ACTIVE_TILE` / `TOGGLEABLE_TILE` / `TILE_CATEGORY` 三个 meta-data 常量，并无 `TILE`，
+> SystemUI 的 `CustomTile.updateDefaultTileAndIcon()` 也仅从 `ServiceInfo` 读取：
+>
+> ```java
+> int icon = info.icon != 0 ? info.icon : info.applicationInfo.icon;
+> mDefaultLabel = info.loadLabel(pm);
+> ```
+>
+> 本项目 minSdk = 34，旧路径永远不会被读到，故连同两个 XML 文件一并删除。
 
 ---
 
@@ -528,7 +514,7 @@ sequenceDiagram
 | E3 | 勿扰模式（DND）下触发 `SecurityException` | 本次点击静默失败，磁贴不崩溃、不卡死 | `runCatching` 兜底（§6.3）；媒体流实际不触发 |
 | E4 | SystemUI 侧重建磁贴（我方进程未重启） | 无条件写 `STATE_INACTIVE` 保证可点击且未高亮，避免缺省态 `UNAVAILABLE` 导致点击被 SystemUI 丢弃 | §6.1 无条件写策略 |
 | E5 | 设备为固定音量设备（`isVolumeFixed`，车机/演示机） | 调节无效但不崩溃 | API 空操作 + `runCatching`；手机端不会出现 |
-| E6 | 磁贴进程被系统回收后面板展开 | SystemUI 重新拉起服务，`onStartListening` 照常执行（刷新刻度缓存 + 确保静态状态） | 被动磁贴标准行为，无需处理 |
+| E6 | 磁贴进程被系统回收后面板展开 | SystemUI 重新拉起服务，`onStartListening` 照常执行（确保静态状态） | 被动磁贴标准行为，无需处理 |
 | E7 | 锁屏下点击 | 正常调节，不解锁、不弹窗 | §7.3 |
 | E8 | 用户用实体键/其他 App 改了音量 | 行为不受影响（磁贴无显示状态依赖）；音量条自然反映真实值 | v1.3 已移除全部显示回写 |
 | E9 | 连续快速点击 | 每次点击独立生效，级数单调到界为止 | 无状态累积逻辑 |
@@ -624,11 +610,11 @@ VolumeTile/
 │       └── res/
 │           ├── drawable/ic_volume_up.xml
 │           ├── drawable/ic_volume_down.xml
+│           ├── drawable/ic_launcher_foreground.xml
 │           ├── mipmap-anydpi-v26/ic_launcher.xml
-│           ├── values/strings.xml
-│           └── xml/
-│               ├── tile_volume_up.xml
-│               └── tile_volume_down.xml
+│           └── values/
+│               ├── colors.xml
+│               └── strings.xml
 ├── build.gradle.kts
 ├── settings.gradle.kts
 ├── gradle.properties
