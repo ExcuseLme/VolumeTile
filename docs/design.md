@@ -1,9 +1,68 @@
 # VolumeTile 设计文档
 
-> **文档版本**: v1.4（随实现滚动更新）
+> **文档版本**: v2.0（随实现滚动更新）
 > **项目代号**: VolumeTile
 > **目标平台**: Android 16（API 36），minSdk 34
-> **文档状态**: 已实现并持续演进（v1.3：整数级对齐 + 纯静态无状态磁贴；v1.4：CI/文档维护轮，APK 行为与 1.3 一致）
+> **文档状态**: 已实现并持续演进
+> - v1.3：整数级对齐 + 纯静态无状态磁贴
+> - v1.4：CI/文档维护轮，APK 行为与 1.3 一致
+> - **v2.0：适配澎湃 4（HyperOS 4 / Android 17）的 Background audio hardening —— 修复磁贴点击无效**
+
+---
+
+## 0. v2.0 根因与修复摘要（重要）
+
+### 0.1 现象
+
+v1.4 及以前，小米 17 升级到澎湃 4（HyperOS 4.0.4 / Android 17 / SDK 37）后，
+点击两个音量磁贴**完全没有反应，也不报错**；而其他视频类 App 调音量正常。
+
+### 0.2 根因（真机 `dumpsys audio` 实测 + AOSP 源码确认）
+
+```
+AudioHardening volume control for api 100 ignored
+  for com.tedexcuseme.volumetile (10526), level: partial, usage: 0, exemption: 4
+```
+
+- `api 100` = `AudioManager#setStreamVolume`
+- `level: partial` = **该应用当前没有运行任何前台服务**
+- `exemption: 4` = `HARDENING_EXEMPTION_TARGET_SDK`（因 targetSdk < 37 而走宽松档）
+
+Android 17 新增 **Background audio hardening**（官方文档 *Background audio hardening*）：
+后台应用的音量 / 铃声 / 播放 API 被**静默丢弃且不抛异常**。
+磁贴服务由 SystemUI **绑定**运行（属后台绑定服务、进程常态 `cch-empty`），
+因此必然命中 `partial` 级加固。
+
+其他视频 App 不受影响，是因为它们有可见 Activity 或正在运行带 WIU 的前台服务，
+符合放行条件 —— **与权限无关**（`MODIFY_AUDIO_SETTINGS` 两边都一样）。
+
+### 0.3 修复方案
+
+AOSP 17 `HardeningEnforcer#blockVolumeMethod` 的判定表：
+
+| 应用状态 | `blockState` | targetSdk **< 37**（本应用） | targetSdk **≥ 37** |
+|---|---|---|---|
+| 有可见 Activity / 带 WIU 的 FGS | ALLOWED | 放行 | 放行 |
+| **有前台服务（无 WIU 也算）** | DENIED_IF_FULL | ✅ **放行** | ❌ 拦截 |
+| 无任何前台服务（v1.4 现状） | DENIED_IF_PARTIAL | ❌ 拦截 | ❌ 拦截 |
+
+因此：**保持 `targetSdk = 36`**，点击磁贴时先用
+[`VolumeAdjustService`](../app/src/main/java/com/tedexcuseme/volumetile/volume/VolumeAdjustService.kt)
+短暂转前台，再调音量，调完立即 `stopSelf`。
+
+> ⚠️ **不要盲目升级 targetSdk 到 37**：那会切到 `DENIED_IF_FULL` 档，
+> 要求前台服务必须精确具备 while-in-use 能力，容错空间**收窄**而非放宽（官方文档原话：
+> *"The restrictions are more stringent if an app targets Android 17"*）。
+>
+> ⚠️ **不要用可见 Activity 作为磁贴修复手段**：虽然可见 Activity 能通过校验，
+> 但每次点磁贴都会弹出界面、顶掉控制中心，体验不可接受。
+
+### 0.4 兼容性
+
+- **Android 16 / 澎湃 3 及更早（无加固）**：前台服务对音量调节无副作用，行为与 v1.4 等价。
+- **FGS 启动失败时**：自动回退到直接调用 `VolumeController.adjust`（即 v1.4 行为），不会彻底失效。
+- **依旧零运行时权限**：新增的 `FOREGROUND_SERVICE` 与 `FOREGROUND_SERVICE_SPECIAL_USE`
+  均为 normal 级，安装即授予，无任何弹窗。
 
 ---
 
@@ -89,12 +148,14 @@ graph TD
 
 | 组件 | 类型 | 职责 |
 |---|---|---|
-| `VolumeTileServiceBase` | `abstract class : TileService` | 磁贴生命周期：`onClick` 仅调音量（对齐网格定位）、`onStartListening` 刷新刻度缓存 + 无条件确保 `STATE_INACTIVE` 静态外观 |
+| `VolumeTileServiceBase` | `abstract class : TileService` | 磁贴生命周期：`onClick` 交给前台服务执行（v2.0），`onStartListening` 刷新刻度缓存 + 无条件确保 `STATE_INACTIVE` 静态外观 |
 | `VolumeUpTileService` | `class : VolumeTileServiceBase` | 音量 +1 磁贴入口，仅声明方向常量 |
 | `VolumeDownTileService` | `class : VolumeTileServiceBase` | 音量 −1 磁贴入口，仅声明方向常量 |
+| `VolumeAdjustService` | `class : Service`（v2.0 新增） | 极短前台服务：转前台 → 调音量 → 立即 `stopSelf`；用于通过 Android 17 后台音量加固校验 |
 | `VolumeController` | `object`（纯逻辑，无 Android UI 依赖） | 封装对齐网格调节（step = max/15）与原生 adjust 回退 |
 
-**依赖关系**：`TileService 子类 → VolumeController`；无其他模块、无第三方库。
+**依赖关系**：`TileService 子类 → VolumeController`，`TileService 子类 → VolumeAdjustService → VolumeController`；
+无其他模块、无第三方库。
 
 ---
 
@@ -121,8 +182,8 @@ android {
         applicationId = "com.tedexcuseme.volumetile"
         minSdk = 34
         targetSdk = 36
-        versionCode = 5
-        versionName = "1.4"
+        versionCode = 6
+        versionName = "2.0"
     }
 }
 ```
@@ -146,6 +207,13 @@ android {
 
     <!-- normal 级权限，安装即授予，无弹窗；调音量惯例声明 -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <!--
+      v2.0：前台服务权限（Android 17 后台音量加固适配）。
+      两者均为 normal 级、安装即授予，不引入任何运行时权限弹窗。
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:label="@string/app_name"
@@ -177,6 +245,19 @@ android {
         <service
             android:name=".tile.VolumeDownTileService"
             ... />
+
+        <!--
+          v2.0：音量调节前台服务（Android 17 后台音量加固适配）
+          exported=false（仅内部使用）；specialUse 类型 + 必须的 subtype property。
+        -->
+        <service
+            android:name=".volume.VolumeAdjustService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Transient foreground service used to apply a single media volume change on behalf of a Quick Settings tile click, required by Android 17 background audio hardening." />
+        </service>
     </application>
 </manifest>
 ```
@@ -193,6 +274,8 @@ android {
 | 不声明 `ACTIVE_TILE` | **刻意不使用主动磁贴模式** | 被动磁贴在每次面板展开时绑定刷新，磁贴级数显示永远最新（包括用户用实体键调过的情况）；主动磁贴仅在点击时绑定，省电但显示可能过期——本项目显示新鲜度优先，见 §7.1 |
 | 不声明 `TOGGLEABLE_TILE` | 不使用 | 语义是"开关型磁贴"的无障碍 Switch 行为；音量 ±1 不是开/关状态 |
 | `MODIFY_AUDIO_SETTINGS` | 声明 | normal 级、安装即得；虽媒体流调节实际不强制，作为惯例声明防御性保留 |
+| `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_SPECIAL_USE` | v2.0 声明 | 均为 **normal 级、安装即授予**，不产生运行时弹窗；供 `VolumeAdjustService` 转前台，以通过 Android 17 后台音量加固校验（§0.3） |
+| 不声明 `FOREGROUND_SERVICE_MEDIA_PLAYBACK` | 刻意不用 | 本应用不播放音频，声明媒体播放类型语义不实，且会让系统按媒体会话治理该服务 |
 | `allowBackup="false"` | 关闭 | 无任何持久化数据，无可备份内容 |
 
 ---
@@ -209,9 +292,13 @@ abstract class VolumeTileServiceBase : TileService() {
     /** 子类声明方向：AudioManager.ADJUST_RAISE / ADJUST_LOWER */
     protected abstract val direction: Int
 
-    /** 点击磁贴：唯一工作就是调音量（对齐网格定位），绝不被任何回写延迟 */
+    /** 点击磁贴：交给前台服务执行（通过 Android 17 后台音量加固校验），失败则回退直接调节 */
     override fun onClick() {
-        VolumeController.adjust(applicationContext, direction)
+        val started = VolumeAdjustService.adjust(applicationContext, direction)
+        if (!started) {
+            // 回退：FGS 起不来时保持旧行为（未加固系统上仍然有效）
+            VolumeController.adjust(applicationContext, direction)
+        }
     }
 
     /** 面板展开/磁贴可见：刷新刻度缓存 + 确保静态（未高亮）外观；兼作 Binder 预热 */
@@ -225,7 +312,9 @@ abstract class VolumeTileServiceBase : TileService() {
 }
 ```
 
-**职责边界（v1.3 静态化）**：基类只做两件事——点击调音量、监听时保证静态外观与刻度缓存。**v1.0–1.2 的整套动态回写机制已全部删除**（subtitle/stateDescription 更新、250ms 节流、Handler/post、lastLevel 比对、onDestroy 回调清理）：D 方案下 label 永不改写、级数不显示，回写的唯一剩余作用是把状态写成 `STATE_INACTIVE`（未高亮的中性工具外观）。**收益**：每击省 2–3 次 IPC、每面板打开省 2 次读 IPC、消除全部 SystemUI 磁贴视图重绘（E4 的彻底版——连点风暴期 SystemUI 不再因我方回写进入状态刷新）。**状态写必须无条件执行**：本地 `Tile` 对象无法感知 SystemUI 侧的磁贴重建，缺省态若为 `UNAVAILABLE`，`CustomTile.handleClick` 会在 SystemUI 侧直接丢弃点击（AOSP 源码已核实），磁贴会"失灵"。
+**职责边界（v1.3 静态化 + v2.0 加固适配）**：基类只做两件事——点击（经前台服务）调音量、监听时保证静态外观与刻度缓存。**v1.0–1.2 的整套动态回写机制已全部删除**（subtitle/stateDescription 更新、250ms 节流、Handler/post、lastLevel 比对、onDestroy 回调清理）：D 方案下 label 永不改写、级数不显示，回写的唯一剩余作用是把状态写成 `STATE_INACTIVE`（未高亮的中性工具外观）。**状态写必须无条件执行**：本地 `Tile` 对象无法感知 SystemUI 侧的磁贴重建，缺省态若为 `UNAVAILABLE`，`CustomTile.handleClick` 会在 SystemUI 侧直接丢弃点击（AOSP 源码已核实），磁贴会"失灵"。
+
+**v2.0 变更**：`onClick` 不再直接调 `VolumeController`，而是先经 `VolumeAdjustService`。原因是 Android 17 的后台音量加固（§0）会静默丢弃磁贴线程的音量调用；前台服务能把进程状态提升到 `UID_STATE_FOREGROUND_SERVICE`，从而通过校验。
 
 ### 6.2 磁贴子类
 
@@ -237,6 +326,29 @@ class VolumeDownTileService : VolumeTileServiceBase() {
     override val direction = AudioManager.ADJUST_LOWER
 }
 ```
+
+### 6.2.1 `VolumeAdjustService`（v2.0 新增）
+
+```kotlin
+class VolumeAdjustService : Service() {
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        runCatching { enterForeground() }        // 先转前台（同步，返回时 AMS 已记录）
+        val direction = intent?.getIntExtra(EXTRA_DIRECTION, INVALID) ?: INVALID
+        if (direction != INVALID) VolumeController.adjust(applicationContext, direction)
+        stopSelf(startId)                        // 调完立即退出，不常驻
+        return START_NOT_STICKY
+    }
+}
+```
+
+要点：
+
+1. **顺序严格**：必须 `startForeground()` 成功之后才调音量，否则仍会被加固拦截。
+2. **生命周期极短**：`onStartCommand` 内完成全部工作并 `stopSelf`，不常驻、不轮询、不留通知。
+3. **类型用 `specialUse`**：不播放音频（故不用 `mediaPlayback`），也不能用 `SHORT_SERVICE`
+   —— 加固豁免要求「非 SHORT_SERVICE 的 FGS」，且 `SHORT_SERVICE` 本身不授予 WIU。
+4. **失败可回退**：`VolumeAdjustService.adjust()` 返回 false 时，调用方直接调 `VolumeController`，
+   保证旧系统或厂商限制下不会彻底失效。
 
 ### 6.3 `VolumeController`（音量核心）
 
@@ -434,14 +546,20 @@ sequenceDiagram
 | `getStreamVolume` / `getStreamMaxVolume` | 1 | 对齐读数 + 刻度（step = max/15，面板可见时缓存） | ✅ |
 | `adjustStreamVolume` | 1 | 网格回退路径（max%15≠0 机型 / 刻度初始化失败） | ✅（未弃用，参考文档核实） |
 | `TILE_CATEGORY` 分类元数据 | 36.1 | 磁贴编辑页归类 | ✅ 旧系统忽略 |
-| `STREAM_ASSISTANT` 等 Android 17 API | 37 | — | ❌ 不使用（设备为 Android 16） |
+| `startForeground` + `FOREGROUND_SERVICE_TYPE_SPECIAL_USE` | 34 | **v2.0 加固适配核心**：点击时短暂转前台以通过音量校验 | ✅（specialUse 自 API 34 起可用） |
+| `startForegroundService` | 26 | v2.0 启动前台服务 | ✅ |
+| `STREAM_ASSISTANT` 等 Android 17 API | 37 | — | ❌ 不使用（保持 targetSdk 36，理由见 §0.3） |
 
 ### 10.2 系统版本影响面
 
-- **Android 14–16**：设计覆盖范围内（minSdk 34）。
+- **Android 14–16（无加固）**：设计覆盖范围内（minSdk 34）；v2.0 的前台服务路径对音量调节无副作用，行为与 v1.4 等价。
 - **Android 16 行为变更**：已逐条核对两份官方清单，无音量/音频/磁贴条目；本应用无 Activity，"无边框""预测性返回"等条目不适用。
-- **Android 17 前瞻**："后台音频强化"仅约束后台擅自播放/停止音频，不涉及调音量；无需提前适配。
-- **OEM 差异（MIUI/ColorOS 等）**：磁贴由 SystemUI 绑定，不受杀后台策略影响；澎湃特有行为（不渲染 subtitle → D 方案、无极音量 0..150 刻度 → step = max/15）均已在实现中适配，其余厂商按 AOSP 标准路径工作（已知例外：vivo OriginOS 有三方磁贴异常的公开 issue，待真机验证）。
+- **Android 17（澎湃 4）**：⚠️ **必须适配** —— 引入 *Background audio hardening*，后台音量调用被静默丢弃。
+  v2.0 已修复（§0）；判别日志见 `dumpsys audio` 中 `AudioHardening volume control ... level: partial`。
+  实机证据：小米 17（`pudding`，HyperOS 4.0.4.0.XPCCNXM / Android 17 / SDK 37）。
+- **OEM 差异（MIUI/ColorOS 等）**：磁贴由 SystemUI 绑定，不受杀后台策略影响；澎湃特有行为
+  （不渲染 subtitle → D 方案、无极音量 0..150 刻度 → step = max/15、Android 17 音量加固 → v2.0 前台服务）
+  均已在实现中适配，其余厂商按 AOSP 标准路径工作（已知例外：vivo OriginOS 有三方磁贴异常的公开 issue，待真机验证）。
 
 ---
 
@@ -495,6 +613,7 @@ VolumeTile/
 │       ├── AndroidManifest.xml
 │       ├── java/com/tedexcuseme/volumetile/
 │       │   ├── volume/VolumeController.kt
+│       │   ├── volume/VolumeAdjustService.kt   ← v2.0 新增（Android 17 加固适配）
 │       │   └── tile/
 │       │       ├── VolumeTileServiceBase.kt
 │       │       ├── VolumeUpTileService.kt

@@ -4,4 +4,9 @@
     <string name="tile_up_label">音量 +</string>
     <string name="tile_down_label">音量 -</string>
     <!-- v1.3（D 方案）：不显示级数——澎湃不渲染 subtitle，级数反馈由控制中心自带音量条承担 -->
+
+    <!-- v2.0：前台服务通知文案（Android 17 音量加固适配所需，短暂出现，MIN 优先级静默） -->
+    <string name="adjust_channel_name">音量调节</string>
+    <string name="adjust_channel_desc">调节媒体音量时临时使用，完成后立即自动消失</string>
+    <string name="adjust_notif_title">正在调节音量…</string>
 </resources>

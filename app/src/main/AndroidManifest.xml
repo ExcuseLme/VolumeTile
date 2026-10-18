@@ -4,6 +4,16 @@
     <!-- normal 级权限：安装即授予，无任何运行时弹窗 -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
+    <!--
+      前台服务权限（Android 17 Background audio hardening 适配）：
+      specialUse 类型需要一个 normal 级权限，安装即授予，无运行时弹窗。
+
+      ⚠️ 不声明 FOREGROUND_SERVICE_MEDIA_PLAYBACK：本应用并不播放音频，
+      声明媒体播放类型语义不实，且会让系统按媒体会话治理该服务。
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
     <!-- 零界面应用：不声明任何 <activity>，无启动器入口 -->
     <application
         android:allowBackup="false"
@@ -46,6 +56,24 @@
             <meta-data
                 android:name="android.service.quicksettings.TILE_CATEGORY"
                 android:value="android.service.quicksettings.CATEGORY_DISPLAY" />
+        </service>
+
+        <!--
+          音量调节前台服务（v2.0 / Android 17 加固适配）
+
+          作用：磁贴点击时短暂转前台，使音量调用通过 Android 17 的
+          Background audio hardening 校验，然后立即退出（不常驻）。
+
+          android:exported="false"：仅本应用内部使用，不对外暴露。
+          foregroundServiceType="specialUse"：见 VolumeAdjustService 类注释的选型理由。
+        -->
+        <service
+            android:name=".volume.VolumeAdjustService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Transient foreground service used to apply a single media volume change on behalf of a Quick Settings tile click, required by Android 17 background audio hardening." />
         </service>
     </application>
 
